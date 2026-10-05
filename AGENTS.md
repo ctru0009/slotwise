@@ -18,4 +18,6 @@
 cmd/web wiring | domain pure logic | app use cases | adapters/{postgres,web,worker} I/O
 
 # Commands
-make check | make test | make test-int | make generate
+make check | make check-all (every failure in one pass) | make test | make test-int | make generate
+Run make check (or make lint) yourself: the git hooks skip when nothing is staged,
+so a quiet hook is not evidence.
