@@ -49,9 +49,11 @@ func StartBare(t *testing.T) (appDSN, ownerDSN string) {
 		tcpostgres.WithUsername("postgres"),
 		tcpostgres.WithPassword("postgres"),
 		testcontainers.WithWaitStrategy(
+			// A busy laptop can crawl through initdb; two minutes turned a slow
+			// Docker into a suite-wide infrastructure failure.
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
-				WithStartupTimeout(2*time.Minute),
+				WithStartupTimeout(5*time.Minute),
 		),
 	)
 	if err != nil {
