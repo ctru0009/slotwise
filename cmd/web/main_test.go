@@ -164,6 +164,23 @@ func TestCrossTenantServiceWrite(t *testing.T) {
 	}
 }
 
+// TestResetSubmissionsAreThrottled covers the one unauthenticated route that
+// hashes a submitted password: the budget is per business and is spent before
+// any hashing, so garbage tokens cannot pin the CPU.
+func TestResetSubmissionsAreThrottled(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedTenant("a", "Salon A", ownerEmail, ownerPassword)
+
+	// The harness clock stands still, so the window cannot roll over mid-test.
+	for range 30 {
+		h.post("/app/a/reset", url.Values{"token": {"garbage"}, "password": {resetPassword}}, nil).
+			wantStatus(t, http.StatusOK).wantContains(t, expiredLinkText)
+	}
+	h.post("/app/a/reset", url.Values{"token": {"garbage"}, "password": {resetPassword}}, nil).
+		wantStatus(t, http.StatusTooManyRequests).wantContains(t, tooManyText)
+}
+
 func TestResetFlowIsSingleUse(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -335,23 +352,23 @@ func (h *harness) seedFixture(slug string) pgtest.Fixture {
 }
 
 // assertSessionPolicy checks the stored session against the policy the server
-// promises: scs stores the idle deadline, capped by the absolute lifetime.
+// promises: scs stores the idle deadline, which is the smaller of the idle
+// window and the absolute lifetime, so the two hours are what a fresh session
+// must show. (The twelve hour lifetime only becomes visible when it is smaller
+// than the idle window, which it is not.)
 func (h *harness) assertSessionPolicy() {
 	h.t.Helper()
 
-	var idleWindow, lifetimeCap bool
+	var idleWindow bool
 	err := h.owner.QueryRow(h.t.Context(), `
-		SELECT expiry > now() + interval '1 hour',
-		       expiry <= now() + interval '12 hours'
-		  FROM sessions`).Scan(&idleWindow, &lifetimeCap)
+		SELECT expiry BETWEEN now() + interval '1 hour 59 minutes'
+		                 AND now() + interval '2 hours 1 minute'
+		  FROM sessions`).Scan(&idleWindow)
 	if err != nil {
 		h.t.Fatalf("reading the stored session: %v", err)
 	}
 	if !idleWindow {
-		h.t.Error("the stored session expires within the hour, want the two hour idle window")
-	}
-	if !lifetimeCap {
-		h.t.Error("the stored session outlives twelve hours, want the absolute lifetime to cap it")
+		h.t.Error("the stored session does not expire two hours out, want the idle window")
 	}
 }
 

@@ -135,6 +135,9 @@ func TestLimiterBoundsRememberedKeys(t *testing.T) {
 
 	// A key that keeps failing is throttled for the length of its window and
 	// admitted again after it rolls over, whether or not it was remembered.
+	// It is inserted one tick later than the flood, so eviction (which drops
+	// the oldest window) cannot pick this one by an arbitrary tie-break.
+	clk.Advance(time.Nanosecond)
 	key := "tenant-1|owner@example.com"
 	limiter.Allow(key, clk.Now())
 	if limiter.Allow(key, clk.Now()) {
