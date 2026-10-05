@@ -1,8 +1,9 @@
+min_version: 2.1.16
 pre-commit:
   parallel: true
   commands:
     fmt:  { run: 'test -z "$(go tool gofumpt -l .)"' }
-    lint: { run: go tool golangci-lint run --new-from-rev=HEAD~1 ./... }
+    lint: { run: ./scripts/lint-new.sh }
 pre-push:
   commands:
     check: { run: make check }
