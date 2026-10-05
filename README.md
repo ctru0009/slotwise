@@ -50,3 +50,7 @@ no global installs, identical versions locally and in CI.
   gives a fast pre-commit (format check + lint of changed lines) and `make check` on push.
   Hooks are per-clone; CI runs the same gate regardless.
 - `ci / check` must be green before merge.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
