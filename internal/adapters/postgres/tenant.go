@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ctru0009/slotwise/internal/adapters/postgres/dbgen"
@@ -31,6 +32,28 @@ func (db *DB) TenantBySlug(ctx context.Context, slug string) (domain.Tenant, err
 	}
 	if err != nil {
 		return domain.Tenant{}, fmt.Errorf("resolving tenant %q: %w", slug, err)
+	}
+	return tenant, nil
+}
+
+// TenantByID returns the tenant with this id. The read runs inside WithTenant,
+// so row level security only ever returns the caller's own row and another
+// tenant's id is indistinguishable from a missing one.
+func (db *DB) TenantByID(ctx context.Context, tenantID uuid.UUID) (domain.Tenant, error) {
+	var tenant domain.Tenant
+	err := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).TenantByID(ctx, tenantID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("tenant %s: %w", tenantID, domain.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("reading tenant by id: %w", err)
+		}
+		tenant = domain.Tenant{ID: row.ID, Slug: row.Slug, Name: row.Name, Timezone: row.Timezone}
+		return nil
+	})
+	if err != nil {
+		return domain.Tenant{}, err
 	}
 	return tenant, nil
 }

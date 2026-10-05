@@ -53,6 +53,18 @@ func (f *fakeTenantStore) TenantBySlug(_ context.Context, slug string) (domain.T
 	return tenant, nil
 }
 
+func (f *fakeTenantStore) TenantByID(_ context.Context, tenantID uuid.UUID) (domain.Tenant, error) {
+	if f.lookupErr != nil {
+		return domain.Tenant{}, f.lookupErr
+	}
+	for _, tenant := range f.bySlug {
+		if tenant.ID == tenantID {
+			return tenant, nil
+		}
+	}
+	return domain.Tenant{}, domain.ErrNotFound
+}
+
 func (f *fakeTenantStore) InsertTenant(_ context.Context, tenant domain.Tenant) (bool, error) {
 	if f.insertErr != nil {
 		return false, f.insertErr
