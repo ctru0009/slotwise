@@ -22,7 +22,8 @@ store methods. M4 (booking + concurrency) next.
   (`starts_at + duration + buffer`). The exclusion constraint then enforces the buffer, and
   the M3 slot engine treats stored busy intervals as blocked spans without padding them.
   A booking writer that stores the appointment end instead would let the engine offer a
-  start the constraint rejects.
+  start inside the previous appointment's buffer, and the constraint alone would not catch
+  it.
 - M6 is the only open-ended milestone.
 - Cut order if short on time: ICS export, then reschedule, then staff time off.
 - Never cut M1 or M4.
