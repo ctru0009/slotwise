@@ -73,20 +73,24 @@ func startPostgres(t *testing.T) (appDSN, ownerDSN string) {
 	return appDSN, ownerDSN
 }
 
-// migrate applies every migration with goose, the same way a deploy would.
+// migrate applies every migration with goose, the same way a deploy would. The
+// Provider API is used instead of goose's package-level setters: those are
+// globals, and parallel tests would race on them.
 func migrate(t *testing.T, dsn string) {
 	t.Helper()
-	goose.SetBaseFS(migrations.FS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatalf("goose dialect: %v", err)
-	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("opening migration connection: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	if err := goose.UpContext(t.Context(), db, "."); err != nil {
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
+	if err != nil {
+		t.Fatalf("building goose provider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+
+	if _, err := provider.Up(t.Context()); err != nil {
 		t.Fatalf("applying migrations: %v", err)
 	}
 }
