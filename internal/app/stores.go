@@ -9,10 +9,15 @@ import (
 	"github.com/ctru0009/slotwise/internal/domain"
 )
 
-// TenantStore resolves a tenant by its public slug, before any session exists.
+// TenantStore resolves a tenant by its public slug, before any session exists,
+// and by id once a request is tenant-scoped.
 type TenantStore interface {
 	// TenantBySlug returns the tenant with this slug, or domain.ErrNotFound.
 	TenantBySlug(ctx context.Context, slug string) (domain.Tenant, error)
+	// TenantByID returns the tenant with this id, or domain.ErrNotFound. The
+	// read is scoped to the id itself, so row level security only ever returns
+	// the caller's own row.
+	TenantByID(ctx context.Context, tenantID uuid.UUID) (domain.Tenant, error)
 	// InsertTenant creates the tenant and reports whether it was inserted. The
 	// tenant's own id is the id the caller generated, which is what lets the
 	// store run the insert inside WithTenant(ctx, tenant.ID) and satisfy the
@@ -60,6 +65,29 @@ type StaffStore interface {
 	CreateStaff(ctx context.Context, tenantID uuid.UUID, in StaffInput) error
 	UpdateStaff(ctx context.Context, tenantID, id uuid.UUID, in StaffInput) error
 	SetStaffActive(ctx context.Context, tenantID, id uuid.UUID, active bool) error
+}
+
+// AvailabilityStore is the persistence the availability use case needs.
+type AvailabilityStore interface {
+	// SlotSnapshot reads one search in a single tenant-scoped transaction: the
+	// active service, the active staff, and per staff the weekly rules, time
+	// off and confirmed busy intervals overlapping [from, to). Unknown or
+	// inactive service and unknown staff report domain.ErrNotFound. Results are
+	// grouped per active staff; never nil.
+	SlotSnapshot(ctx context.Context, tenantID, serviceID uuid.UUID, from, to time.Time) (domain.SlotSnapshot, error)
+	// ListWeeklyRules returns the staff member's whole week; never nil.
+	ListWeeklyRules(ctx context.Context, tenantID, staffID uuid.UUID) ([]domain.WeeklyRule, error)
+	// ReplaceWeeklyRules replaces the staff member's whole week in one
+	// transaction. An invisible staff id reports domain.ErrNotFound.
+	ReplaceWeeklyRules(ctx context.Context, tenantID, staffID uuid.UUID, rules []WeeklyRuleInput) error
+	// ListTimeOff returns the staff member's absences; never nil.
+	ListTimeOff(ctx context.Context, tenantID, staffID uuid.UUID) ([]domain.TimeOff, error)
+	// InsertTimeOff stores one absence; an invisible staff id reports
+	// domain.ErrNotFound.
+	InsertTimeOff(ctx context.Context, tenantID, staffID uuid.UUID, from, to time.Time) error
+	// DeleteTimeOff removes one absence; an unknown id reports
+	// domain.ErrNotFound.
+	DeleteTimeOff(ctx context.Context, tenantID, staffID, id uuid.UUID) error
 }
 
 // Sender delivers outbound messages. Development wires the logging

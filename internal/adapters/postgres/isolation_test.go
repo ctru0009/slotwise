@@ -5,7 +5,9 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -35,6 +37,7 @@ func TestTenantIsolation(t *testing.T) {
 	assertCrossTenantUpdateTouchesNothing(t, db, tenantA.Tenant, bookingB)
 	assertCrossTenantDeleteTouchesNothing(t, db, tenantA.Tenant, bookingB)
 	assertAuthTablesIsolated(t, db, appDSN, owner, tenantA, tenantB)
+	assertAvailabilityTablesIsolated(t, db, owner, tenantA, tenantB)
 	assertMalformedTenantMatchesNothing(t, db, tenantA.Tenant)
 	assertTenantlessConnectionSeesNothing(t, appDSN)
 }
@@ -392,5 +395,142 @@ func assertUserRow(t *testing.T, owner *pgxpool.Pool, tenantID, id uuid.UUID, em
 	if gotTenant != tenantID || gotEmail != email || gotHash != passwordHash {
 		t.Errorf("user %s = (tenant %s, email %q, hash %q), want (%s, %q, %q)",
 			id, gotTenant, gotEmail, gotHash, tenantID, email, passwordHash)
+	}
+}
+
+// assertAvailabilityTablesIsolated proves the M3 tables sit behind the same
+// tenant policy as the M1 tables: tenant A reads none of B's rules or absences,
+// its updates and deletes touch none of B's rows, and an insert naming B's
+// staff member is rejected by the tenant-consistent foreign key even though the
+// row's own tenant id matches.
+func assertAvailabilityTablesIsolated(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture) {
+	t.Helper()
+
+	ruleB := pgtest.SeedWeeklyRule(t, owner, tenantB, 1, 540, 600)
+	offB := pgtest.SeedTimeOff(t, owner, tenantB, "2026-11-02T09:00:00Z", "2026-11-02T17:00:00Z")
+
+	assertAvailabilityReadsScoped(t, db, tenantA, ruleB, offB)
+	assertAvailabilityRowsUntouchable(t, db, owner, tenantA, ruleB, offB)
+	assertCrossTenantAvailabilityInsertRejected(t, db, tenantA, tenantB)
+}
+
+// assertAvailabilityReadsScoped checks that tenant A sees none of tenant B's
+// availability rows.
+func assertAvailabilityReadsScoped(t *testing.T, db *postgres.DB, tenantA pgtest.Fixture, ruleB, offB uuid.UUID) {
+	t.Helper()
+
+	err := db.WithTenant(t.Context(), tenantA.Tenant, func(ctx context.Context, tx pgx.Tx) error {
+		var rules, absences int
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM availability_rules WHERE id = $1", ruleB).Scan(&rules); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM time_off WHERE id = $1", offB).Scan(&absences); err != nil {
+			return err
+		}
+		if rules != 0 {
+			t.Errorf("tenant A sees %d of tenant B's rules, want 0", rules)
+		}
+		if absences != 0 {
+			t.Errorf("tenant A sees %d of tenant B's absences, want 0", absences)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reading availability tables as tenant A: %v", err)
+	}
+}
+
+// assertAvailabilityRowsUntouchable checks that A's updates and deletes reach
+// none of B's rows, and that B's rows are intact afterwards.
+func assertAvailabilityRowsUntouchable(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA pgtest.Fixture, ruleB, offB uuid.UUID) {
+	t.Helper()
+
+	statements := []struct {
+		name string
+		sql  string
+		id   uuid.UUID
+	}{
+		{"updated a rule", "UPDATE availability_rules SET start_minute = 0 WHERE id = $1", ruleB},
+		{"deleted a rule", "DELETE FROM availability_rules WHERE id = $1", ruleB},
+		{"updated an absence", "UPDATE time_off SET ends_at = now() WHERE id = $1", offB},
+		{"deleted an absence", "DELETE FROM time_off WHERE id = $1", offB},
+	}
+	err := db.WithTenant(t.Context(), tenantA.Tenant, func(ctx context.Context, tx pgx.Tx) error {
+		for _, stmt := range statements {
+			tag, err := tx.Exec(ctx, stmt.sql, stmt.id)
+			if err != nil {
+				return fmt.Errorf("%s: %w", stmt.name, err)
+			}
+			if tag.RowsAffected() != 0 {
+				t.Errorf("tenant A %s of tenant B's rows, want 0 rows affected", stmt.name)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("writing availability tables as tenant A: %v", err)
+	}
+	assertAvailabilityRowsIntact(t, owner, ruleB, offB)
+}
+
+// assertAvailabilityRowsIntact re-reads B's rows as the owner, after A's
+// rejected writes.
+func assertAvailabilityRowsIntact(t *testing.T, owner *pgxpool.Pool, ruleB, offB uuid.UUID) {
+	t.Helper()
+
+	var startMinute int
+	if err := owner.QueryRow(t.Context(), "SELECT start_minute FROM availability_rules WHERE id = $1", ruleB).Scan(&startMinute); err != nil {
+		t.Fatalf("reading tenant B's rule as the owner: %v", err)
+	}
+	if startMinute != 540 {
+		t.Errorf("tenant B's rule start_minute = %d, want its original 540", startMinute)
+	}
+
+	var endsAt time.Time
+	if err := owner.QueryRow(t.Context(), "SELECT ends_at FROM time_off WHERE id = $1", offB).Scan(&endsAt); err != nil {
+		t.Fatalf("reading tenant B's absence as the owner: %v", err)
+	}
+	if !endsAt.Equal(time.Date(2026, time.November, 2, 17, 0, 0, 0, time.UTC)) {
+		t.Errorf("tenant B's absence ends_at = %v, want its original 17:00Z", endsAt)
+	}
+}
+
+// assertCrossTenantAvailabilityInsertRejected covers both cross-tenant shapes:
+// a row whose tenant id is B's is rejected by the policy (42501), and a row
+// under A's own tenant that names B's staff is rejected by the composite
+// foreign key (23503), which the policy alone would accept.
+func assertCrossTenantAvailabilityInsertRejected(t *testing.T, db *postgres.DB, tenantA, tenantB pgtest.Fixture) {
+	t.Helper()
+	ctx := t.Context()
+
+	policyErr := db.WithTenant(ctx, tenantA.Tenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO availability_rules (tenant_id, staff_id, weekday, start_minute, end_minute)
+			VALUES ($1::uuid, $2::uuid, 1, 540, 600)`, tenantB.Tenant, tenantB.Staff)
+		return err
+	})
+	if !hasSQLState(policyErr, "42501") {
+		t.Errorf("inserting a rule for another tenant returned %v, want SQLSTATE 42501", policyErr)
+	}
+
+	ruleErr := db.WithTenant(ctx, tenantA.Tenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO availability_rules (tenant_id, staff_id, weekday, start_minute, end_minute)
+			VALUES ($1::uuid, $2::uuid, 1, 540, 600)`, tenantA.Tenant, tenantB.Staff)
+		return err
+	})
+	if !hasSQLState(ruleErr, "23503") {
+		t.Errorf("rule pointed at another tenant's staff returned %v, want SQLSTATE 23503", ruleErr)
+	}
+
+	offErr := db.WithTenant(ctx, tenantA.Tenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO time_off (tenant_id, staff_id, starts_at, ends_at)
+			VALUES ($1::uuid, $2::uuid, '2026-11-05T09:00:00Z', '2026-11-05T10:00:00Z')`,
+			tenantA.Tenant, tenantB.Staff)
+		return err
+	})
+	if !hasSQLState(offErr, "23503") {
+		t.Errorf("absence pointed at another tenant's staff returned %v, want SQLSTATE 23503", offErr)
 	}
 }

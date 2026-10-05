@@ -3,11 +3,13 @@
 Multi-tenant booking app for small service businesses — barbers, physios, tutors.
 Customers book from a public page; owners and staff manage services, hours and bookings.
 
-**Status: M2 complete** — M1's schema, forced row level security and tenant-scoped
-transaction helper are joined by real auth (tenant-scoped logins, argon2id, sessions in
-Postgres, CSRF, single-use reset links) and the owner/staff dashboard for services and
-staff. Scope and hard requirements live in [SPEC.md](SPEC.md); milestones and exit criteria
-in [ROADMAP.md](ROADMAP.md); working rules in [AGENTS.md](AGENTS.md).
+**Status: M3 complete.** M1's schema, forced row level security and tenant-scoped
+transaction helper, M2's auth and owner/staff dashboard, and M3's slot engine: weekly
+availability rules, time off and service buffers feed a pure-domain search that returns
+bookable starts for a local date range in the tenant's IANA timezone, with DST transitions
+and half-open overlaps handled and tested against a real Postgres. Scope and hard
+requirements live in [SPEC.md](SPEC.md); milestones and exit criteria in
+[ROADMAP.md](ROADMAP.md); working rules in [AGENTS.md](AGENTS.md).
 
 ## Architecture
 

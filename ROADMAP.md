@@ -2,8 +2,8 @@
 
 Exit gate for every milestone: `make check` green in CI, plus the listed test.
 
-Progress: M0–M2 done. M1 shipped without sqlc, which landed in M2 with the first
-store methods. M3 (slot engine) next.
+Progress: M0–M3 done. M1 shipped without sqlc, which landed in M2 with the first
+store methods. M4 (booking + concurrency) next.
 
 | # | Milestone | Exit criteria | Size |
 |---|---|---|---|
@@ -18,6 +18,12 @@ store methods. M3 (slot engine) next.
 
 ## Notes
 - M3 and M4 carry the real risk (time zones, concurrency), so the tests are the deliverable.
+- M4 must store `bookings.ends_at` as the occupied end with the service buffer included
+  (`starts_at + duration + buffer`). The exclusion constraint then enforces the buffer, and
+  the M3 slot engine treats stored busy intervals as blocked spans without padding them.
+  A booking writer that stores the appointment end instead would let the engine offer a
+  start inside the previous appointment's buffer, and the constraint alone would not catch
+  it.
 - M6 is the only open-ended milestone.
 - Cut order if short on time: ICS export, then reschedule, then staff time off.
 - Never cut M1 or M4.
