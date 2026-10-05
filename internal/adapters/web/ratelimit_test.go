@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,12 +21,48 @@ func TestLimiterBlocksAfterLimit(t *testing.T) {
 
 	for i := range 10 {
 		if !limiter.Allow(key, clk.Now()) {
-			t.Fatalf("Allow before the %dth failure = false, want true", i+1)
+			t.Fatalf("Allow for attempt %d = false, want true", i+1)
 		}
-		limiter.Fail(key, clk.Now())
 	}
 	if limiter.Allow(key, clk.Now()) {
 		t.Fatal("the eleventh Allow = true, want false")
+	}
+}
+
+// TestLimiterAllowsExactlyTheLimitConcurrently is the regression test for the
+// check-then-act gap: when accounting happens in a separate call after the
+// check, a burst of simultaneous attempts all pass the check before any of them
+// is recorded, and every one of them reaches the password verification it was
+// supposed to be limited to.
+func TestLimiterAllowsExactlyTheLimitConcurrently(t *testing.T) {
+	t.Parallel()
+	const (
+		limit   = 10
+		callers = 200
+	)
+	limiter := NewLimiter(limit, 15*time.Minute)
+	now := limiterTestStart
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		admitted int
+	)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if limiter.Allow("tenant-1|owner@example.com", now) {
+				mu.Lock()
+				admitted++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if admitted != limit {
+		t.Errorf("%d of %d simultaneous attempts were admitted, want exactly %d", admitted, callers, limit)
 	}
 }
 
@@ -36,7 +73,7 @@ func TestLimiterWindowRollsOver(t *testing.T) {
 	key := "tenant-1|owner@example.com"
 
 	for range 10 {
-		limiter.Fail(key, clk.Now())
+		limiter.Allow(key, clk.Now())
 	}
 	if limiter.Allow(key, clk.Now()) {
 		t.Fatal("Allow inside the window = true, want false")
@@ -54,9 +91,9 @@ func TestLimiterResetClearsBlockedKey(t *testing.T) {
 	limiter := NewLimiter(1, 15*time.Minute)
 	key := "tenant-1|owner@example.com"
 
-	limiter.Fail(key, clk.Now())
+	limiter.Allow(key, clk.Now())
 	if limiter.Allow(key, clk.Now()) {
-		t.Fatal("Allow after one failure = true, want false")
+		t.Fatal("Allow after one attempt = true, want false")
 	}
 
 	limiter.Reset(key)
@@ -70,12 +107,12 @@ func TestLimiterKeysAreIndependent(t *testing.T) {
 	clk := clock.NewFake(limiterTestStart)
 	limiter := NewLimiter(1, 15*time.Minute)
 
-	limiter.Fail("tenant-1|owner@example.com", clk.Now())
+	limiter.Allow("tenant-1|owner@example.com", clk.Now())
 	if !limiter.Allow("tenant-1|other@example.com", clk.Now()) {
 		t.Fatal("Allow for an untouched key = false, want true")
 	}
 	if limiter.Allow("tenant-1|owner@example.com", clk.Now()) {
-		t.Fatal("Allow for the failed key = true, want false")
+		t.Fatal("Allow for the spent key = true, want false")
 	}
 }
 
@@ -84,38 +121,27 @@ func TestLimiterBoundsRememberedKeys(t *testing.T) {
 	clk := clock.NewFake(limiterTestStart)
 	limiter := NewLimiter(1, 15*time.Minute)
 
-	// More distinct keys than the limiter may remember, all with a live
-	// window: the map is capped, so one of them gets dropped.
-	const attempts = maxLimiterEntries + 1
-	keys := make([]string, attempts)
-	for i := range keys {
-		keys[i] = fmt.Sprintf("user-%04d@example.com", i)
-		limiter.Fail(keys[i], clk.Now())
-	}
-
-	blocked := 0
-	for _, key := range keys {
+	// Twice as many live keys as the limiter may remember: the map has to stop
+	// growing, which is what keeps user-controlled keys from exhausting memory.
+	for i := range 2 * maxLimiterEntries {
+		key := fmt.Sprintf("user-%04d@example.com", i)
 		if !limiter.Allow(key, clk.Now()) {
-			blocked++
+			t.Fatalf("Allow(%q) = false on its first attempt, want true", key)
 		}
 	}
-	if blocked != maxLimiterEntries {
-		t.Fatalf("blocked live keys = %d, want %d: the limiter must cap its map", blocked, maxLimiterEntries)
+	if got := limiter.size(); got > maxLimiterEntries {
+		t.Errorf("the limiter remembers %d keys, want at most %d", got, maxLimiterEntries)
 	}
 
-	// A key recorded after the window rolled over still blocks normally.
+	// A key that keeps failing is throttled for the length of its window and
+	// admitted again after it rolls over, whether or not it was remembered.
+	key := "tenant-1|owner@example.com"
+	limiter.Allow(key, clk.Now())
+	if limiter.Allow(key, clk.Now()) {
+		t.Fatal("Allow after one attempt = true, want false")
+	}
 	clk.Advance(15 * time.Minute)
-	fresh := "fresh@example.com"
-	limiter.Fail(fresh, clk.Now())
-	if limiter.Allow(fresh, clk.Now()) {
-		t.Fatal("Allow for a key with a recorded failure = true, want false")
-	}
-
-	// Every key from the first burst is allowed again: either its window
-	// expired or the limiter evicted it.
-	for _, key := range keys {
-		if !limiter.Allow(key, clk.Now()) {
-			t.Fatalf("Allow(%q) after the window expired = false, want true", key)
-		}
+	if !limiter.Allow(key, clk.Now()) {
+		t.Fatal("Allow after the window expired = false, want true")
 	}
 }

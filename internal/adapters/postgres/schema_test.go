@@ -163,6 +163,7 @@ func assertResolverFunctionsAreNarrow(t *testing.T, pool *pgxpool.Pool) {
 
 	rows, err := pool.Query(t.Context(), `
 		SELECT p.proname,
+		       pg_catalog.pg_get_userbyid(p.proowner),
 		       p.prosecdef,
 		       COALESCE(p.proconfig, '{}'),
 		       p.proacl IS NULL,
@@ -184,16 +185,17 @@ func assertResolverFunctionsAreNarrow(t *testing.T, pool *pgxpool.Pool) {
 	for rows.Next() {
 		var (
 			name      string
+			owner     string
 			secdef    bool
 			proconfig []string
 			aclNull   bool
 			acl       []string
 		)
-		if err := rows.Scan(&name, &secdef, &proconfig, &aclNull, &acl); err != nil {
+		if err := rows.Scan(&name, &owner, &secdef, &proconfig, &aclNull, &acl); err != nil {
 			t.Fatalf("scanning resolver function: %v", err)
 		}
 		seen[name] = true
-		assertResolverFunction(t, name, secdef, proconfig, aclNull, acl)
+		assertResolverFunction(t, name, owner, secdef, proconfig, aclNull, acl)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("reading resolver functions: %v", err)
@@ -206,10 +208,11 @@ func assertResolverFunctionsAreNarrow(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // assertResolverFunction checks one function's row from pg_proc: it must run as
-// its definer, pin search_path, and grant EXECUTE to the app role and no one
+// its definer, pin search_path, and grant EXECUTE to the app role and nobody
 // else. A NULL ACL is the default state where PUBLIC holds EXECUTE, so it is a
-// failure in itself.
-func assertResolverFunction(t *testing.T, name string, secdef bool, proconfig []string, aclNull bool, acl []string) {
+// failure in itself, and every grantee other than the owner and slotwise_app
+// fails — including PUBLIC, and including any role a later migration might add.
+func assertResolverFunction(t *testing.T, name, owner string, secdef bool, proconfig []string, aclNull bool, acl []string) {
 	t.Helper()
 
 	if !secdef {
@@ -224,11 +227,21 @@ func assertResolverFunction(t *testing.T, name string, secdef bool, proconfig []
 	}
 	grantedToApp := false
 	for _, entry := range acl {
-		if strings.HasPrefix(entry, "PUBLIC:") {
-			t.Errorf("%s still grants %s to PUBLIC", name, entry)
+		grantee, privilege, ok := strings.Cut(entry, ":")
+		if !ok {
+			t.Errorf("%s has an ACL entry that is not grantee:privilege: %q", name, entry)
+			continue
 		}
-		if entry == "slotwise_app:EXECUTE" {
+		switch grantee {
+		case owner:
+			// The owner holds every privilege on the function it owns.
+		case "slotwise_app":
+			if privilege != "EXECUTE" {
+				t.Errorf("%s grants %s to slotwise_app, want EXECUTE only", name, privilege)
+			}
 			grantedToApp = true
+		default:
+			t.Errorf("%s grants %s to %s, want only its owner %s and slotwise_app", name, privilege, grantee, owner)
 		}
 	}
 	if !grantedToApp {

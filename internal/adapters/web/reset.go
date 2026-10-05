@@ -35,13 +35,12 @@ func (s *server) forgotSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := r.FormValue("email")
-	key := accountKey(tenant.ID, email)
-	now := s.deps.Clock.Now()
-	if !s.deps.Reset.Allow(key, now) {
+	// Allow records the request: this endpoint is throttled on requests rather
+	// than failures, because the response is identical either way.
+	if !s.deps.Reset.Allow(accountKey(tenant.ID, email), s.deps.Clock.Now()) {
 		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
-	s.deps.Reset.Fail(key, now)
 	if err := s.deps.Auth.RequestPasswordReset(r.Context(), tenant, email, s.deps.BaseURL); err != nil {
 		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
 		return
@@ -69,6 +68,14 @@ func (s *server) resetSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := parseForm(w, r); err != nil {
 		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		return
+	}
+	// Verifying a password costs a hash whatever the token is, so this
+	// unauthenticated route is throttled per business before any hashing: the
+	// window is wide enough for someone retrying a link, and narrow enough that
+	// garbage tokens cannot pin the CPU.
+	if !s.deps.ResetSubmit.Allow(tenant.ID.String(), s.deps.Clock.Now()) {
+		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
 	token := r.FormValue("token")

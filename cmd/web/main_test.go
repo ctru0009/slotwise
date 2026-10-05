@@ -34,6 +34,8 @@ const (
 	ownerEmail       = "owner@example.com"
 	ownerPassword    = "correct-horse-battery"
 	resetPassword    = "brand-new-horse-battery"
+	staffEmail       = "staff@example.com"
+	staffPassword    = "staff-horse-battery"
 	sessionCookie    = "slotwise_session"
 	loginFailedText  = "email or password is incorrect"
 	expiredLinkText  = "This link is invalid or has expired"
@@ -59,6 +61,52 @@ func TestLoginFlow(t *testing.T) {
 		wantStatus(t, http.StatusSeeOther).wantLocation(t, "/login")
 
 	h.get("/app").wantStatus(t, http.StatusSeeOther).wantLocation(t, "/login")
+}
+
+// TestSessionPolicy pins what the login flow promises about the cookie and the
+// stored session: an idle window of two hours, an absolute lifetime of twelve,
+// and a cookie that only the server can read.
+func TestSessionPolicy(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedTenant("a", "Salon A", ownerEmail, ownerPassword)
+
+	resp := h.login("a", ownerEmail, ownerPassword)
+	setCookie := resp.header.Get("Set-Cookie")
+	for _, want := range []string{"HttpOnly", "SameSite=Lax", "Path=/", "Max-Age=7200"} {
+		if !strings.Contains(setCookie, want) {
+			t.Errorf("session cookie %q does not carry %s", setCookie, want)
+		}
+	}
+
+	h.assertSessionPolicy()
+}
+
+// TestStaffLoginsReadButCannotWrite covers the whole chain from a session to
+// the owner-only rule: a staff login sees the dashboard, is offered no write
+// form, and is refused when it posts one anyway.
+func TestStaffLoginsReadButCannotWrite(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fixture := h.seedFixture("c")
+	hash, err := app.HashPassword(staffPassword)
+	if err != nil {
+		t.Fatalf("hashing the staff password: %v", err)
+	}
+	pgtest.SeedUser(t, h.owner, fixture, staffEmail, hash, "staff")
+
+	h.login("c", staffEmail, staffPassword)
+
+	dashboard := h.get("/app").wantStatus(t, http.StatusOK).wantContains(t, "Tenant c")
+	if strings.Contains(dashboard.body, `action="/app/services"`) {
+		t.Error("the dashboard offers a staff login a form it will refuse")
+	}
+	if strings.Contains(dashboard.body, `action="/app/staff"`) {
+		t.Error("the dashboard offers a staff login a staff form it will refuse")
+	}
+
+	h.post("/app/services", url.Values{"name": {"Cut"}, "duration_minutes": {"30"}}, nil).
+		wantStatus(t, http.StatusForbidden).wantContains(t, "You do not have permission")
 }
 
 func TestLoginFailuresAreIndistinguishable(t *testing.T) {
@@ -120,6 +168,7 @@ func TestResetFlowIsSingleUse(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.seedTenant("a", "Salon A", ownerEmail, ownerPassword)
+	h.login("a", ownerEmail, ownerPassword)
 
 	h.post("/app/a/forgot", url.Values{"email": {ownerEmail}}, nil).
 		wantStatus(t, http.StatusSeeOther).wantLocation(t, "/app/a/forgot?sent=1")
@@ -128,7 +177,9 @@ func TestResetFlowIsSingleUse(t *testing.T) {
 	h.post("/app/a/reset", url.Values{"token": {token}, "password": {resetPassword}}, nil).
 		wantStatus(t, http.StatusSeeOther).wantLocation(t, "/app/a/login?reset=1")
 
-	// The old password is gone and the new one signs in.
+	// The session opened with the old password is finished, and the old
+	// password is gone while the new one signs in.
+	h.get("/app").wantStatus(t, http.StatusSeeOther).wantLocation(t, "/login")
 	h.post("/app/a/login", url.Values{"email": {ownerEmail}, "password": {ownerPassword}}, nil).
 		wantStatus(t, http.StatusOK).wantContains(t, loginFailedText)
 	h.login("a", ownerEmail, resetPassword)
@@ -274,6 +325,34 @@ func (h *harness) login(slug, email, password string) response {
 	h.t.Helper()
 	return h.post("/app/"+slug+"/login", url.Values{"email": {email}, "password": {password}}, nil).
 		wantStatus(h.t, http.StatusSeeOther).wantLocation(h.t, "/app").wantCookie(h.t)
+}
+
+// seedFixture creates a tenant with a staff member and a service as the owner
+// pool, for tests that need rows but not a login.
+func (h *harness) seedFixture(slug string) pgtest.Fixture {
+	h.t.Helper()
+	return pgtest.Seed(h.t, h.owner, slug)
+}
+
+// assertSessionPolicy checks the stored session against the policy the server
+// promises: scs stores the idle deadline, capped by the absolute lifetime.
+func (h *harness) assertSessionPolicy() {
+	h.t.Helper()
+
+	var idleWindow, lifetimeCap bool
+	err := h.owner.QueryRow(h.t.Context(), `
+		SELECT expiry > now() + interval '1 hour',
+		       expiry <= now() + interval '12 hours'
+		  FROM sessions`).Scan(&idleWindow, &lifetimeCap)
+	if err != nil {
+		h.t.Fatalf("reading the stored session: %v", err)
+	}
+	if !idleWindow {
+		h.t.Error("the stored session expires within the hour, want the two hour idle window")
+	}
+	if !lifetimeCap {
+		h.t.Error("the stored session outlives twelve hours, want the absolute lifetime to cap it")
+	}
 }
 
 // seedService inserts a service for a slug as the owner pool and returns its id,

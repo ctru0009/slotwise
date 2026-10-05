@@ -83,15 +83,15 @@ func (s *server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	email := r.FormValue("email")
 	key := accountKey(tenant.ID, email)
-	now := s.deps.Clock.Now()
-	if !s.deps.Login.Allow(key, now) {
+	// Allow records the attempt, so simultaneous guesses cannot all pass the
+	// check before any of them is counted.
+	if !s.deps.Login.Allow(key, s.deps.Clock.Now()) {
 		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
 	user, err := s.deps.Auth.Authenticate(r.Context(), tenant.ID, email, r.FormValue("password"))
 	switch {
 	case errors.Is(err, domain.ErrInvalidCredentials):
-		s.deps.Login.Fail(key, now)
 		s.render(w, r, PageLogin, LoginPage{Tenant: tenant, Error: messageBadLogin})
 		return
 	case err != nil:
@@ -108,6 +108,10 @@ func (s *server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	s.deps.Sessions.Put(ctx, sessionTenantID, tenant.ID.String())
 	s.deps.Sessions.Put(ctx, sessionUserID, user.ID.String())
 	s.deps.Sessions.Put(ctx, sessionTenantSlug, tenant.Slug)
+	// The session carries the hash it was created against, so changing the
+	// password retires every session that predates the change (withUser
+	// compares them).
+	s.deps.Sessions.Put(ctx, sessionPasswordHash, user.PasswordHash)
 	s.deps.Login.Reset(key)
 	http.Redirect(w, r, "/app", http.StatusSeeOther)
 }

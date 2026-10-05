@@ -32,6 +32,10 @@ const (
 	loginWindow        = 15 * time.Minute
 	resetLimit         = 5
 	resetWindow        = time.Hour
+	// The reset form hashes the submitted password before it can know whether
+	// the token is valid, so its budget is per business and generous enough for
+	// somebody retrying a link.
+	resetSubmitLimit = 30
 )
 
 // bootstrapVars are the environment variables that provision the first tenant
@@ -143,8 +147,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 
 // load fills the rest of the provisioning group, refusing any partial
 // configuration: a deploy that meant to create a tenant must not quietly serve
-// without one.
+// without one. The whole group is read before it is judged, because a group
+// that only looks empty is exactly the mistake this has to catch.
 func (b *bootstrapEnv) load(getenv func(string) string) error {
+	for _, v := range bootstrapVars {
+		*v.value(b) = getenv(v.env)
+	}
 	if !b.set() {
 		return nil
 	}
@@ -152,7 +160,6 @@ func (b *bootstrapEnv) load(getenv func(string) string) error {
 		return errors.New("SLOTWISE_BOOTSTRAP_SLUG is required when other SLOTWISE_BOOTSTRAP_* variables are set")
 	}
 	for _, v := range bootstrapVars {
-		*v.value(b) = getenv(v.env)
 		if *v.value(b) == "" {
 			return fmt.Errorf("%s is required when SLOTWISE_BOOTSTRAP_SLUG is set", v.env)
 		}
@@ -203,15 +210,16 @@ func wire(ctx context.Context, cfg config, logger *slog.Logger) (*http.Server, f
 	sessions.Store = postgres.NewSessionStore(ctx, db)
 
 	handler := web.New(web.Deps{
-		Sessions: sessions,
-		Auth:     auth,
-		Services: app.NewServices(db),
-		Staff:    app.NewStaff(db),
-		Views:    views,
-		Clock:    clk,
-		Login:    web.NewLimiter(loginLimit, loginWindow),
-		Reset:    web.NewLimiter(resetLimit, resetWindow),
-		BaseURL:  cfg.baseURL,
+		Sessions:    sessions,
+		Auth:        auth,
+		Services:    app.NewServices(db),
+		Staff:       app.NewStaff(db),
+		Views:       views,
+		Clock:       clk,
+		Login:       web.NewLimiter(loginLimit, loginWindow),
+		Reset:       web.NewLimiter(resetLimit, resetWindow),
+		ResetSubmit: web.NewLimiter(resetSubmitLimit, resetWindow),
+		BaseURL:     cfg.baseURL,
 	})
 
 	// The probe endpoints sit outside the application router so they stay

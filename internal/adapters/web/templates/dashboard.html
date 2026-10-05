@@ -8,6 +8,7 @@
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 
 <h2>Services</h2>
+{{if .User.IsOwner}}
 <form method="post" action="/app/services">
   <p>
     <label for="new-service-name">Name</label>
@@ -27,10 +28,11 @@
   </p>
   <p><button type="submit">Add service</button></p>
 </form>
+{{end}}
 {{if .Services}}
 <table>
   <thead>
-    <tr><th>Name</th><th>Duration</th><th>Buffer</th><th>Price</th><th>Status</th><th>Change</th></tr>
+    <tr><th>Name</th><th>Duration</th><th>Buffer</th><th>Price</th><th>Status</th>{{if $.User.IsOwner}}<th>Change</th>{{end}}</tr>
   </thead>
   <tbody>
     {{range .Services}}
@@ -40,6 +42,7 @@
       <td>{{.BufferMinutes}} min</td>
       <td>{{money .PriceCents}}</td>
       <td>{{if .Active}}Active{{else}}Inactive{{end}}</td>
+      {{if $.User.IsOwner}}
       <td>
         <form method="post" action="/app/services/{{.ID}}">
           <input name="name" type="text" value="{{.Name}}" aria-label="Name" required>
@@ -58,6 +61,7 @@
           {{end}}
         </form>
       </td>
+      {{end}}
     </tr>
     {{end}}
   </tbody>
@@ -67,6 +71,7 @@
 {{end}}
 
 <h2>Staff</h2>
+{{if .User.IsOwner}}
 <form method="post" action="/app/staff">
   <p>
     <label for="new-staff-name">Name</label>
@@ -78,10 +83,11 @@
   </p>
   <p><button type="submit">Add staff member</button></p>
 </form>
+{{end}}
 {{if .Staff}}
 <table>
   <thead>
-    <tr><th>Name</th><th>Email</th><th>Status</th><th>Change</th></tr>
+    <tr><th>Name</th><th>Email</th><th>Status</th>{{if $.User.IsOwner}}<th>Change</th>{{end}}</tr>
   </thead>
   <tbody>
     {{range .Staff}}
@@ -89,6 +95,7 @@
       <td>{{.Name}}</td>
       <td>{{.Email}}</td>
       <td>{{if .Active}}Active{{else}}Inactive{{end}}</td>
+      {{if $.User.IsOwner}}
       <td>
         <form method="post" action="/app/staff/{{.ID}}">
           <input name="name" type="text" value="{{.Name}}" aria-label="Name" required>
@@ -105,6 +112,7 @@
           {{end}}
         </form>
       </td>
+      {{end}}
     </tr>
     {{end}}
   </tbody>

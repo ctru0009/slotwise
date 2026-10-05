@@ -12,11 +12,14 @@ import (
 
 // Session keys. The ids are stored as UUID strings; the slug is kept so the
 // dashboard can name the tenant it renders, since tenants are addressed
-// publicly by slug and a session only holds the tenant's id otherwise.
+// publicly by slug and a session only holds the tenant's id otherwise. The
+// password hash is what the session was created against, so a password change
+// can retire the sessions that predate it.
 const (
-	sessionTenantID   = "tenant_id"
-	sessionUserID     = "user_id"
-	sessionTenantSlug = "tenant_slug"
+	sessionTenantID     = "tenant_id"
+	sessionUserID       = "user_id"
+	sessionTenantSlug   = "tenant_slug"
+	sessionPasswordHash = "password_hash"
 )
 
 // The messages shared by the error pages, so the same failure reads the same
@@ -54,6 +57,14 @@ func (s *server) withUser(next handlerFunc) http.HandlerFunc {
 			return
 		case err != nil:
 			s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+			return
+		}
+		// A session that was opened with a different password is finished:
+		// changing the password is how someone locks out whoever knew the old
+		// one. A session from before this key existed reads as a mismatch, so
+		// it is retired too.
+		if s.deps.Sessions.GetString(ctx, sessionPasswordHash) != user.PasswordHash {
+			s.endSession(w, r)
 			return
 		}
 		next(w, r, user)

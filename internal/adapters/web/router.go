@@ -19,7 +19,10 @@ type Deps struct {
 	Clock    clock.Clock
 	Login    *Limiter
 	Reset    *Limiter
-	BaseURL  string
+	// ResetSubmit throttles the unauthenticated reset form, which hashes a
+	// submitted password before it can know whether the token is any good.
+	ResetSubmit *Limiter
+	BaseURL     string
 }
 
 // server holds the dependencies every handler shares.

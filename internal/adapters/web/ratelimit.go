@@ -10,15 +10,22 @@ import (
 
 // maxLimiterEntries caps how many distinct keys a Limiter remembers. Keys are
 // user-controlled (login emails), so an unbounded map would be a cheap way to
-// exhaust memory.
-const maxLimiterEntries = 1024
+// exhaust memory — but eviction is itself a lever an attacker can pull, so the
+// cap sits far above the number of accounts one process serves while keeping
+// the eviction sort cheap enough to be irrelevant. Every entry cost an attempt
+// that verified a password hash, so filling the map is expensive, and clearing
+// one account's window by flooding costs that many attempts again.
+const maxLimiterEntries = 4096
 
-// Limiter is a fixed-window rate limiter, safe for concurrent use. Each key
-// gets one window of window length; Allow permits an attempt while fewer than
-// limit failures were recorded in the current window, and Fail records one.
+// Limiter is a fixed-window rate limiter, safe for concurrent use. Allow is the
+// only accounting call: it records the attempt and reports whether the window
+// had room for it, so a burst of concurrent attempts cannot pass the check
+// before any of them is recorded — which is precisely the gap an attacker wants
+// for password guessing, since each admitted attempt costs a hash
+// verification. Callers clear a key with Reset when an attempt succeeds.
 //
-// Fixed windows are cheap but coarse: a burst that straddles a window
-// boundary can admit up to twice the limit.
+// Fixed windows are cheap but coarse: a burst that straddles a window boundary
+// can admit up to twice the limit.
 type Limiter struct {
 	mu      sync.Mutex
 	limit   int
@@ -26,13 +33,13 @@ type Limiter struct {
 	entries map[string]entry
 }
 
-// entry is one key's current window: when it started and the failures it saw.
+// entry is one key's current window: when it started and the attempts it saw.
 type entry struct {
 	start time.Time
 	hits  int
 }
 
-// NewLimiter returns a Limiter that allows limit failures per window.
+// NewLimiter returns a Limiter that allows limit attempts per window.
 func NewLimiter(limit int, window time.Duration) *Limiter {
 	return &Limiter{
 		limit:   limit,
@@ -41,30 +48,26 @@ func NewLimiter(limit int, window time.Duration) *Limiter {
 	}
 }
 
-// Allow reports whether key may be attempted at now. It records nothing.
+// Allow records an attempt on key at now and reports whether the window had
+// room for it. It reports false once limit attempts were recorded inside the
+// window, and starts a fresh window once the previous one expired.
 func (l *Limiter) Allow(key string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	e, ok := l.entries[hashKey(key)]
-	if !ok || now.Sub(e.start) >= l.window {
-		return true
-	}
-	return e.hits < l.limit
-}
-
-// Fail records one failed attempt for key, starting a new window when the
-// previous one expired.
-func (l *Limiter) Fail(key string, now time.Time) {
 	h := hashKey(key)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if e, ok := l.entries[h]; ok && now.Sub(e.start) < l.window {
-		e.hits++
-		l.entries[h] = e
-		return
+
+	e, ok := l.entries[h]
+	if !ok || now.Sub(e.start) >= l.window {
+		l.entries[h] = entry{start: now, hits: 1}
+		l.evictLocked(now)
+		return true
 	}
-	l.entries[h] = entry{start: now, hits: 1}
-	l.evictLocked(now)
+	if e.hits >= l.limit {
+		return false
+	}
+	e.hits++
+	l.entries[h] = e
+	return true
 }
 
 // Reset forgets key, so its next attempt starts with a clean window.
@@ -75,8 +78,21 @@ func (l *Limiter) Reset(key string) {
 	delete(l.entries, h)
 }
 
-// evictLocked keeps the entry map bounded, dropping expired keys first and
-// the oldest live keys only when that was not enough.
+// size reports how many keys the limiter remembers. It exists so tests can pin
+// the memory bound, which is otherwise invisible.
+func (l *Limiter) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
+}
+
+// evictLocked keeps the entry map bounded. Expired windows go first; if the map
+// is still full it drops the oldest live windows, because the alternatives are
+// worse: refusing new keys while full would turn the memory bound into a way to
+// lock every account out, and tracking a new key without room would let it be
+// attempted forever. The cap is therefore large enough that filling it costs
+// maxLimiterEntries password verifications before an attacker can clear a
+// single account's window.
 func (l *Limiter) evictLocked(now time.Time) {
 	if len(l.entries) <= maxLimiterEntries {
 		return
