@@ -224,6 +224,55 @@ func SeedBooking(t *testing.T, owner *pgxpool.Pool, f Fixture, startsAt string) 
 	return uuid.MustParse(id)
 }
 
+// SeedBookingSpan inserts a confirmed booking that starts at startsAt and
+// occupies minutes, the way a booking is stored: ends_at is the occupied end
+// with the buffer already included.
+func SeedBookingSpan(t *testing.T, owner *pgxpool.Pool, f Fixture, startsAt string, minutes int) uuid.UUID {
+	t.Helper()
+	var id string
+	err := owner.QueryRow(t.Context(), `
+		INSERT INTO bookings (tenant_id, staff_id, service_id, customer_name, customer_email,
+		                      starts_at, ends_at, status, idempotency_key)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, 'Ada', 'ada@example.com',
+		        $4::timestamptz, $4::timestamptz + make_interval(mins => $5), 'confirmed', $6)
+		RETURNING id::text`,
+		f.Tenant.String(), f.Staff.String(), f.Service.String(), startsAt, minutes, "span-"+startsAt).Scan(&id)
+	if err != nil {
+		t.Fatalf("seeding booking span: %v", err)
+	}
+	return uuid.MustParse(id)
+}
+
+// SeedWeeklyRule inserts one availability rule for f's staff member.
+func SeedWeeklyRule(t *testing.T, owner *pgxpool.Pool, f Fixture, weekday, startMinute, endMinute int) uuid.UUID {
+	t.Helper()
+	var id string
+	err := owner.QueryRow(t.Context(), `
+		INSERT INTO availability_rules (tenant_id, staff_id, weekday, start_minute, end_minute)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+		RETURNING id::text`,
+		f.Tenant.String(), f.Staff.String(), weekday, startMinute, endMinute).Scan(&id)
+	if err != nil {
+		t.Fatalf("seeding weekly rule: %v", err)
+	}
+	return uuid.MustParse(id)
+}
+
+// SeedTimeOff inserts one absence for f's staff member.
+func SeedTimeOff(t *testing.T, owner *pgxpool.Pool, f Fixture, startsAt, endsAt string) uuid.UUID {
+	t.Helper()
+	var id string
+	err := owner.QueryRow(t.Context(), `
+		INSERT INTO time_off (tenant_id, staff_id, starts_at, ends_at)
+		VALUES ($1::uuid, $2::uuid, $3::timestamptz, $4::timestamptz)
+		RETURNING id::text`,
+		f.Tenant.String(), f.Staff.String(), startsAt, endsAt).Scan(&id)
+	if err != nil {
+		t.Fatalf("seeding time off: %v", err)
+	}
+	return uuid.MustParse(id)
+}
+
 // SeedUser inserts a tenant user with the given email, password hash and role
 // ("owner" or "staff") and returns its id.
 func SeedUser(t *testing.T, owner *pgxpool.Pool, f Fixture, email, passwordHash, role string) uuid.UUID {

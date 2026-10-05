@@ -11,6 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AvailabilityRule struct {
+	ID          uuid.UUID
+	TenantID    uuid.UUID
+	StaffID     uuid.UUID
+	Weekday     int16
+	StartMinute int32
+	EndMinute   int32
+	CreatedAt   time.Time
+}
+
 type Booking struct {
 	ID             uuid.UUID
 	TenantID       uuid.UUID
@@ -65,6 +75,15 @@ type Tenant struct {
 	Slug      string
 	Name      string
 	Timezone  string
+	CreatedAt time.Time
+}
+
+type TimeOff struct {
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	StaffID   uuid.UUID
+	StartsAt  time.Time
+	EndsAt    time.Time
 	CreatedAt time.Time
 }
 

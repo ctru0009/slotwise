@@ -70,6 +70,8 @@ func TestMigrationsGrantTheAppRoleWhenItArrivesLate(t *testing.T) {
 	for table, want := range map[string]bool{
 		"users":                 true,
 		"password_reset_tokens": true,
+		"availability_rules":    true,
+		"time_off":              true,
 		"sessions":              false,
 		"goose_db_version":      false,
 	} {
