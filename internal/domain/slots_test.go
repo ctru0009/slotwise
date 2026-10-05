@@ -670,11 +670,39 @@ func TestDayStart(t *testing.T) {
 		})
 	}
 
-	// Santiago's skipped midnight means the day starts at 01:00 local, the
-	// first instant that exists.
+	assertDayStartSkippedMidnight(t)
+	assertDayStartRepeatedMidnight(t)
+}
+
+// assertDayStartSkippedMidnight checks Santiago's nonexistent midnight: the day
+// starts at 01:00 local, the first instant that exists.
+func assertDayStartSkippedMidnight(t *testing.T) {
+	t.Helper()
+
 	santiago := location(t, "America/Santiago")
 	got := domain.DayStart(localDate(t, "2026-09-06"), santiago)
 	if h, m, _ := got.Clock(); h != 1 || m != 0 {
 		t.Errorf("DayStart(2026-09-06, Santiago) = %v local, want 01:00", got.Format("15:04"))
+	}
+}
+
+// assertDayStartRepeatedMidnight checks Havana's ambiguous midnight: 2026-11-01
+// repeats 00:00 through 00:59 when DST ends at 01:00 local, so either pass is a
+// valid first instant. Assert the wall reading and the two acceptable UTC
+// instants, not the pass.
+func assertDayStartRepeatedMidnight(t *testing.T) {
+	t.Helper()
+
+	havana := location(t, "America/Havana")
+	repeated := domain.DayStart(localDate(t, "2026-11-01"), havana)
+	if y, m, d := repeated.Date(); y != 2026 || m != time.November || d != 1 {
+		t.Errorf("DayStart(2026-11-01, Havana) reads back as %04d-%02d-%02d, want 2026-11-01", y, m, d)
+	}
+	if h, m, _ := repeated.Clock(); h != 0 || m != 0 {
+		t.Errorf("DayStart(2026-11-01, Havana) = %s local, want 00:00", repeated.Format("15:04"))
+	}
+	firstPass, secondPass := inst(2026, time.November, 1, 4, 0), inst(2026, time.November, 1, 5, 0)
+	if !repeated.Equal(firstPass) && !repeated.Equal(secondPass) {
+		t.Errorf("DayStart(2026-11-01, Havana) = %v, want either pass of midnight, 04:00Z or 05:00Z", repeated.UTC())
 	}
 }
