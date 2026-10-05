@@ -3,9 +3,11 @@
 package postgres_test
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,10 +28,9 @@ const (
 	tenantDSN   = "postgres://" + appRole + ":" + appPassword + "@%s:%s/slotwise?sslmode=disable&pool_max_conns=20"
 )
 
-// startPostgres runs a throwaway Postgres, provisions the non-owner app role and
-// applies the committed migrations. It returns the DSN the application uses (a
-// role without BYPASSRLS, so policies apply) and an owner DSN for fixtures.
-func startPostgres(t *testing.T) (appDSN, ownerDSN string) {
+// startContainer runs a throwaway Postgres. The application role is not created
+// here, so tests can exercise the migration path that expects it to be missing.
+func startContainer(t *testing.T) (appDSN, ownerDSN string) {
 	t.Helper()
 	ctx := t.Context()
 
@@ -38,7 +39,9 @@ func startPostgres(t *testing.T) (appDSN, ownerDSN string) {
 		tcpostgres.WithUsername("postgres"),
 		tcpostgres.WithPassword("postgres"),
 		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").WithOccurrence(2),
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(2*time.Minute),
 		),
 	)
 	if err != nil {
@@ -61,16 +64,27 @@ func startPostgres(t *testing.T) (appDSN, ownerDSN string) {
 
 	ownerDSN = fmt.Sprintf(adminDSN, host, port.Port())
 	appDSN = fmt.Sprintf(tenantDSN, host, port.Port())
+	return appDSN, ownerDSN
+}
 
+// startPostgres is startContainer plus the application role and the committed
+// migrations, which is what every other test in this package needs.
+func startPostgres(t *testing.T) (appDSN, ownerDSN string) {
+	t.Helper()
+	appDSN, ownerDSN = startContainer(t)
+	createAppRole(t, ownerDSN)
+	migrate(t, ownerDSN)
+	return appDSN, ownerDSN
+}
+
+func createAppRole(t *testing.T, ownerDSN string) {
+	t.Helper()
 	owner := newOwnerPool(t, ownerDSN)
-	_, err = owner.Exec(ctx,
+	_, err := owner.Exec(t.Context(),
 		fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOBYPASSRLS", appRole, appPassword))
 	if err != nil {
 		t.Fatalf("creating %s: %v", appRole, err)
 	}
-
-	migrate(t, ownerDSN)
-	return appDSN, ownerDSN
 }
 
 // migrate applies every migration with goose, the same way a deploy would. The
@@ -78,21 +92,28 @@ func startPostgres(t *testing.T) (appDSN, ownerDSN string) {
 // globals, and parallel tests would race on them.
 func migrate(t *testing.T, dsn string) {
 	t.Helper()
+	if err := applyMigrations(t.Context(), dsn); err != nil {
+		t.Fatalf("applying migrations: %v", err)
+	}
+}
+
+func applyMigrations(ctx context.Context, dsn string) error {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		t.Fatalf("opening migration connection: %v", err)
+		return fmt.Errorf("opening migration connection: %w", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	defer func() { _ = db.Close() }()
 
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
 	if err != nil {
-		t.Fatalf("building goose provider: %v", err)
+		return fmt.Errorf("building goose provider: %w", err)
 	}
-	t.Cleanup(func() { _ = provider.Close() })
+	defer func() { _ = provider.Close() }()
 
-	if _, err := provider.Up(t.Context()); err != nil {
-		t.Fatalf("applying migrations: %v", err)
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("running migrations: %w", err)
 	}
+	return nil
 }
 
 func newOwnerPool(t *testing.T, dsn string) *pgxpool.Pool {
@@ -105,6 +126,21 @@ func newOwnerPool(t *testing.T, dsn string) *pgxpool.Pool {
 	return pool
 }
 
+// seedStaff adds another staff member to the same tenant, so multi-row lock
+// tests have a second row to use.
+func seedStaff(t *testing.T, owner *pgxpool.Pool, f fixture, name, email string) uuid.UUID {
+	t.Helper()
+
+	var staffID string
+	err := owner.QueryRow(t.Context(),
+		`INSERT INTO staff (tenant_id, name, email) VALUES ($1::uuid, $2, $3) RETURNING id::text`,
+		f.tenant.String(), name, email).Scan(&staffID)
+	if err != nil {
+		t.Fatalf("seeding staff %s: %v", name, err)
+	}
+	return uuid.MustParse(staffID)
+}
+
 func newAppDB(t *testing.T, dsn string) *postgres.DB {
 	t.Helper()
 	db, err := postgres.New(t.Context(), dsn)
@@ -113,6 +149,16 @@ func newAppDB(t *testing.T, dsn string) *postgres.DB {
 	}
 	t.Cleanup(db.Close)
 	return db
+}
+
+func newAppPool(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(t.Context(), dsn)
+	if err != nil {
+		t.Fatalf("connecting as the app role: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
 // fixture is one tenant with a staff member and a service.

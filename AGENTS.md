@@ -8,6 +8,8 @@
 - Wrap errors: fmt.Errorf("doing X: %w", err). No panics outside main.
 - ctx first param. No context.Background() or time.Now() outside main/clock. Inject both.
 - Every query runs inside the tenant-scoped transaction helper. No raw pool access in handlers.
+  Booking writes take the staff row lock (SELECT ... FOR UPDATE) before inserting, so contention
+  queues instead of deadlocking; use WithTenantRetry for other transient aborts.
 - No float64 for money. Store timestamptz. Compute in tenant timezone.
 - No new dependencies without asking. Prefer stdlib.
 - Every behavior change gets a test that fails without the change.

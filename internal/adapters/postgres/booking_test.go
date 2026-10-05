@@ -40,6 +40,13 @@ func TestConcurrentBookingsForOneSlot(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			err := db.WithTenant(ctx, tenant.tenant, func(ctx context.Context, tx pgx.Tx) error {
+				// Take the staff row first: without it, concurrent inserts for
+				// one slot deadlock on the exclusion constraint's index instead
+				// of queueing, and the losers never see ErrSlotTaken.
+				if _, err := tx.Exec(ctx,
+					"SELECT 1 FROM staff WHERE id = $1::uuid FOR UPDATE", tenant.staff.String()); err != nil {
+					return err
+				}
 				_, execErr := tx.Exec(ctx, `
 					INSERT INTO bookings (tenant_id, staff_id, service_id, customer_name, customer_email,
 					                      starts_at, ends_at, status, idempotency_key)
