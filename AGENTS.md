@@ -16,6 +16,14 @@
   Concurrency and tenancy changes need an integration test.
 - Small diffs, one concern each. Don't refactor unrelated code.
 
+# Final review
+Before declaring work done, spawn a separate agent with fresh context to review the change
+adversarially. Give it the diff and the requirement — not your reasoning — and ask it to
+falsify the work: edge cases (empty, boundary, duplicate, concurrent), ordering and retries,
+swallowed errors, tenancy and permission boundaries, and tests that assert the
+implementation instead of the requirement. Fix or answer every finding; your own "looks
+good" is not a review.
+
 # Layout
 cmd/web wiring | domain pure logic | app use cases | adapters/{postgres,web,worker} I/O
 
