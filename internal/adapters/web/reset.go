@@ -1,0 +1,89 @@
+package web
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/ctru0009/slotwise/internal/domain"
+)
+
+// messageResetLinkDead is what the reset form shows for a token that is
+// unknown, already used or expired.
+const messageResetLinkDead = "This link is invalid or has expired"
+
+// forgotForm serves the reset-request form at GET /app/{slug}/forgot.
+func (s *server) forgotForm(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.tenantOr404(w, r)
+	if !ok {
+		return
+	}
+	page := ForgotPage{Tenant: tenant, Sent: r.URL.Query().Get("sent") == "1"}
+	s.render(w, r, PageForgot, page)
+}
+
+// forgotSubmit mails a reset link at POST /app/{slug}/forgot. It throttles
+// accepted requests rather than failures, because the response is identical
+// either way: an unknown email reports success too, so nobody can probe which
+// addresses have an account.
+func (s *server) forgotSubmit(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.tenantOr404(w, r)
+	if !ok {
+		return
+	}
+	if err := parseForm(w, r); err != nil {
+		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		return
+	}
+	email := r.FormValue("email")
+	key := accountKey(tenant.ID, email)
+	now := s.deps.Clock.Now()
+	if !s.deps.Reset.Allow(key, now) {
+		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
+		return
+	}
+	s.deps.Reset.Fail(key, now)
+	if err := s.deps.Auth.RequestPasswordReset(r.Context(), tenant, email, s.deps.BaseURL); err != nil {
+		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		return
+	}
+	http.Redirect(w, r, "/app/"+tenant.Slug+"/forgot?sent=1", http.StatusSeeOther)
+}
+
+// resetForm serves the new-password form at GET /app/{slug}/reset, carrying
+// the token from the link into a hidden field.
+func (s *server) resetForm(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.tenantOr404(w, r)
+	if !ok {
+		return
+	}
+	page := ResetPage{Tenant: tenant, Token: r.URL.Query().Get("token")}
+	s.render(w, r, PageReset, page)
+}
+
+// resetSubmit spends a reset token and stores the new password at
+// POST /app/{slug}/reset.
+func (s *server) resetSubmit(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.tenantOr404(w, r)
+	if !ok {
+		return
+	}
+	if err := parseForm(w, r); err != nil {
+		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		return
+	}
+	token := r.FormValue("token")
+	page := ResetPage{Tenant: tenant, Token: token}
+	err := s.deps.Auth.ResetPassword(r.Context(), tenant.ID, token, r.FormValue("password"))
+	switch {
+	case errors.Is(err, domain.ErrResetTokenInvalid):
+		page.Error = messageResetLinkDead
+		s.render(w, r, PageReset, page)
+	case errors.Is(err, domain.ErrInvalidInput):
+		page.Error = err.Error()
+		s.render(w, r, PageReset, page)
+	case err != nil:
+		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+	default:
+		http.Redirect(w, r, "/app/"+tenant.Slug+"/login?reset=1", http.StatusSeeOther)
+	}
+}
