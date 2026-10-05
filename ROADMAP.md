@@ -2,8 +2,8 @@
 
 Exit gate for every milestone: `make check` green in CI, plus the listed test.
 
-Progress: M0 and M1 done — M1 shipped without sqlc, which lands with the first store
-methods. M2 next.
+Progress: M0–M2 done. M1 shipped without sqlc, which landed in M2 with the first
+store methods. M3 (slot engine) next.
 
 | # | Milestone | Exit criteria | Size |
 |---|---|---|---|

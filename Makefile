@@ -1,6 +1,6 @@
 .PHONY: generate fmt lint test test-int vuln check check-all
 generate:
-	@echo "nothing to generate yet"
+	go tool sqlc generate
 fmt:
 	go tool gofumpt -w .
 lint:

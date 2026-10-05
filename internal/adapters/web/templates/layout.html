@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slotwise</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    max-width: 46rem;
+    padding: 1.5rem 1rem 3rem;
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #1a1a1a;
+    background: #fff;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .5rem; }
+  p { margin: .5rem 0; }
+  form { margin: 1rem 0; }
+  label { display: block; font-weight: 600; font-size: .85rem; margin-bottom: .15rem; }
+  input { font: inherit; padding: .35rem .5rem; border: 1px solid #767676; border-radius: 4px; max-width: 100%; }
+  button { font: inherit; padding: .4rem .8rem; border: 1px solid #767676; border-radius: 4px; background: #f3f3f3; cursor: pointer; }
+  input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid #1a5fb4; outline-offset: 2px; }
+  a { color: #1a5fb4; }
+  .error { border: 1px solid #b3261e; background: #fdecea; color: #7a1c16; padding: .6rem .8rem; border-radius: 4px; }
+  .notice { border: 1px solid #1b6e3c; background: #e8f5ec; color: #14532d; padding: .6rem .8rem; border-radius: 4px; }
+  .muted { color: #5f6368; }
+  table { width: 100%; border-collapse: collapse; margin: .75rem 0; }
+  th, td { border: 1px solid #c4c4c4; padding: .4rem .5rem; text-align: left; vertical-align: top; }
+  th { background: #f3f3f3; }
+  td form { margin: .25rem 0; }
+  footer { margin-top: 3rem; padding-top: .75rem; border-top: 1px solid #e0e0e0; color: #5f6368; font-size: .85rem; }
+</style>
+</head>
+<body>
+{{template "content" .}}
+<footer>Slotwise — scheduling for small teams.</footer>
+</body>
+</html>

@@ -3,10 +3,11 @@
 Multi-tenant booking app for small service businesses — barbers, physios, tutors.
 Customers book from a public page; owners and staff manage services, hours and bookings.
 
-**Status: M1 complete** — schema, forced row level security, the tenant-scoped transaction
-helper and both hard-requirement tests (cross-tenant isolation, one winner under
-concurrency) are in. Scope and hard requirements live in [SPEC.md](SPEC.md); milestones and
-exit criteria in [ROADMAP.md](ROADMAP.md); working rules in [AGENTS.md](AGENTS.md).
+**Status: M2 complete** — M1's schema, forced row level security and tenant-scoped
+transaction helper are joined by real auth (tenant-scoped logins, argon2id, sessions in
+Postgres, CSRF, single-use reset links) and the owner/staff dashboard for services and
+staff. Scope and hard requirements live in [SPEC.md](SPEC.md); milestones and exit criteria
+in [ROADMAP.md](ROADMAP.md); working rules in [AGENTS.md](AGENTS.md).
 
 ## Architecture
 
@@ -36,7 +37,7 @@ interfaces it needs, adapters implement them, `cmd/web` wires the process.
 | `make check` | The gate: generate → fmt → lint → test → test-int → vuln → `go mod tidy -diff` |
 | `make check-all` | Same gate with `-k`, so every failing stage is reported in one pass |
 | `make test` / `make test-int` | Unit tests / Docker-backed integration tests (`-tags=integration`) |
-| `make generate` | Codegen (sqlc, templ) — a no-op until their first inputs exist; `go tool goose` drives migrations |
+| `make generate` | Codegen (sqlc now, templ in M6) from `queries/` and `migrations/`; `go tool goose` drives migrations |
 | `make fmt`, `make lint`, `make vuln` | Single-purpose runs |
 
 Tools are pinned in `go.mod` as Go tool directives and invoked as `go tool <name>`:
@@ -58,6 +59,36 @@ table privileges). Every query runs inside `postgres.DB.WithTenant`, which sets
 writes take the staff row lock first, so concurrent requests for one slot queue and the
 exclusion constraint decides the winner. All of this is proven against a throwaway Postgres
 in `make test-int`.
+
+## Accounts and sessions
+
+Logins are tenant-scoped at `/app/{slug}/login`: the same email can own two businesses, and
+the tenant comes from the session rather than the URL once signed in. Passwords are
+argon2id (m=19456, t=2, p=1, 12–128 bytes), sessions live in Postgres so a restart does not
+sign anyone out, and the `sessions` table is unreachable for the application role — it is
+read through `SECURITY DEFINER` functions, as is the slug resolver that has to work before
+a tenant is known. Reset links are single-use, expire after an hour, and are stored as a
+SHA-256 of the token; requesting one for an unknown email succeeds and sends nothing. Login
+failures and reset requests are rate limited in memory (10 per 15 minutes, 5 per hour, per
+account), so a single process must serve the traffic it is meant to throttle.
+
+Migrations must therefore run as a superuser or a role with `BYPASSRLS`: the resolver
+functions read tables that force row level security, and 0003 fails loudly if the migrating
+role cannot. The first tenant and its owner are provisioned from the environment,
+idempotently, on startup:
+
+```sh
+DATABASE_URL=... SLOTWISE_BASE_URL=https://slotwise.example \
+SLOTWISE_BOOTSTRAP_SLUG=demo SLOTWISE_BOOTSTRAP_NAME="Demo Salon" \
+SLOTWISE_BOOTSTRAP_TIMEZONE=Europe/Berlin \
+SLOTWISE_BOOTSTRAP_OWNER_EMAIL=owner@example.com \
+SLOTWISE_BOOTSTRAP_OWNER_PASSWORD=... go run ./cmd/web
+```
+
+A partial `SLOTWISE_BOOTSTRAP_*` group fails startup instead of quietly serving without a
+tenant, and the slug has to stay clear of `services` and `staff`, which the router uses.
+`SLOTWISE_COOKIE_SECURE=1` marks the session cookie `Secure`. Until M5 wires a real
+provider, outbound mail — reset links included — goes to the log.
 
 ## Guardrails
 

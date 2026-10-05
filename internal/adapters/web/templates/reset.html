@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Choose a new password</h1>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+<form method="post" action="/app/{{.Tenant.Slug}}/reset">
+  <input type="hidden" name="token" value="{{.Token}}">
+  <p>
+    <label for="password">New password</label>
+    <input id="password" name="password" type="password" minlength="12" autocomplete="new-password" required>
+  </p>
+  <p><button type="submit">Set new password</button></p>
+</form>
+{{end}}
