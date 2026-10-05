@@ -2,6 +2,7 @@ min_version: 2.1.16
 pre-commit:
   parallel: true
   commands:
+    guardrails: { run: ./scripts/check-guardrails.sh }
     fmt:  { run: 'test -z "$(go tool gofumpt -l .)"' }
     lint: { run: ./scripts/lint-new.sh }
 pre-push:

@@ -73,3 +73,5 @@ linters:
         linters: [forbidigo]
 formatters:
   enable: [gofumpt, goimports]
+issues:
+  uniq-by-line: false

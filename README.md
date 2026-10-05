@@ -32,6 +32,7 @@ interfaces it needs, adapters implement them, `cmd/web` wires the process.
 | Command | What it does |
 |---|---|
 | `make check` | The gate: generate → fmt → lint → test → test-int → vuln → `go mod tidy -diff` |
+| `make check-all` | Same gate with `-k`, so every failing stage is reported in one pass |
 | `make test` / `make test-int` | Unit tests / Docker-backed integration tests (`-tags=integration`) |
 | `make generate` | sqlc, goose, templ — added in M1 |
 | `make fmt`, `make lint`, `make vuln` | Single-purpose runs |
