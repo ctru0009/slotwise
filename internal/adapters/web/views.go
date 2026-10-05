@@ -61,13 +61,13 @@ type ResetPage struct {
 }
 
 // DashboardPage is the authenticated overview of a tenant's services and
-// staff, with the forms that change them.
+// staff, with the forms that change them. A write either redirects here or
+// re-renders with an Error, so there is no notice to show.
 type DashboardPage struct {
 	Tenant   domain.Tenant
 	User     domain.User
 	Services []domain.Service
 	Staff    []domain.Staff
-	Notice   string
 	Error    string
 }
 

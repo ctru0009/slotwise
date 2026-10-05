@@ -169,13 +169,21 @@ func (b *bootstrapEnv) load(getenv func(string) string) error {
 
 // wire builds the server: database, session store, use cases and the HTTP
 // layer. It returns the server and the cleanup that closes the database, so
-// main and the end-to-end test drive exactly the same composition.
+// main and the end-to-end test drive exactly the same composition. A failure
+// closes the pool before returning: the caller has no cleanup to run yet, and a
+// half-started server must not hold connections open.
 func wire(ctx context.Context, cfg config, logger *slog.Logger) (*http.Server, func(), error) {
 	db, err := postgres.New(ctx, cfg.databaseURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening the database: %w", err)
 	}
 	cleanup := db.Close
+	started := false
+	defer func() {
+		if !started {
+			cleanup()
+		}
+	}()
 
 	clk, sender := cfg.clock, cfg.sender
 	if clk == nil {
@@ -238,6 +246,7 @@ func wire(ctx context.Context, cfg config, logger *slog.Logger) (*http.Server, f
 		Handler:           root,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	started = true
 	return srv, cleanup, nil
 }
 
