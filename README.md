@@ -69,7 +69,9 @@ in `make test-int`.
 - Git hooks via [lefthook](https://github.com/evilmartians/lefthook): `brew install lefthook && lefthook install`
   gives a fast pre-commit (format check + lint of changed lines) and `make check` on push.
   Hooks are per-clone; CI runs the same gate regardless.
-- `ci / check` must be green before merge.
+- `ci / check` must be green before merge. Markdown and license changes skip the heavy
+  steps (the job still reports, so the required check is satisfied) — anything else runs
+  the full gate.
 
 ## License
 

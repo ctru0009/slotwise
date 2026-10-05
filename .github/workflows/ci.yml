@@ -10,13 +10,39 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
-      - run: make check
+      # The job is the required status check, so it must always run and report:
+      # path filters on the trigger would leave pull requests waiting forever for
+      # a status that never arrives. Docs-only changes skip the work instead.
+      - name: Detect a docs-only change
+        id: scope
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          docs_only=true
+          while IFS= read -r file; do
+            case "$file" in
+              *.md|LICENSE) ;;
+              *) docs_only=false ;;
+            esac
+          done < <(git diff --name-only "$base...HEAD")
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+      - name: Docs only, nothing to verify
+        if: steps.scope.outputs.docs_only == 'true'
+        run: echo "only markdown and the license changed; make check and the schema gates are skipped"
+      - if: steps.scope.outputs.docs_only != 'true'
+        run: make check
       - name: Generated code is committed
+        if: steps.scope.outputs.docs_only != 'true'
         run: git diff --exit-code
       - name: Migrations are append-only
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           git fetch origin main
           if git diff --name-status origin/main...HEAD -- migrations | grep -Ev '^A\s'; then
             echo "Existing migrations must not be modified or deleted"; exit 1
           fi
-      - run: go build ./... && go mod verify
+      - if: steps.scope.outputs.docs_only != 'true'
+        run: go build ./... && go mod verify
