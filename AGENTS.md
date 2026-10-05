@@ -10,6 +10,9 @@
 - Every query runs inside the tenant-scoped transaction helper. No raw pool access in handlers.
   Booking writes take the staff row lock (SELECT ... FOR UPDATE) before inserting, so contention
   queues instead of deadlocking; use WithTenantRetry for other transient aborts.
+- Referential integrity bypasses row level security, so tenant-owned tables reference their
+  parents with composite keys: bookings (tenant_id, staff_id) -> staff (tenant_id, id). A
+  policy alone does not stop one tenant pointing at another tenant's rows.
 - No float64 for money. Store timestamptz. Compute in tenant timezone.
 - No new dependencies without asking. Prefer stdlib.
 - Every behavior change gets a test that fails without the change.
