@@ -1,0 +1,115 @@
+{{define "content"}}
+<h1>{{.Tenant.Name}}</h1>
+<p class="muted">Signed in as {{.User.Email}} ({{.User.Role}})</p>
+<form method="post" action="/app/logout">
+  <p><button type="submit">Sign out</button></p>
+</form>
+{{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+
+<h2>Services</h2>
+<form method="post" action="/app/services">
+  <p>
+    <label for="new-service-name">Name</label>
+    <input id="new-service-name" name="name" type="text" required>
+  </p>
+  <p>
+    <label for="new-service-duration">Duration (minutes)</label>
+    <input id="new-service-duration" name="duration_minutes" type="number" min="1" max="1440" required>
+  </p>
+  <p>
+    <label for="new-service-buffer">Buffer (minutes)</label>
+    <input id="new-service-buffer" name="buffer_minutes" type="number" min="0" max="240" value="0" required>
+  </p>
+  <p>
+    <label for="new-service-price">Price (cents)</label>
+    <input id="new-service-price" name="price_cents" type="number" min="0" value="0" required>
+  </p>
+  <p><button type="submit">Add service</button></p>
+</form>
+{{if .Services}}
+<table>
+  <thead>
+    <tr><th>Name</th><th>Duration</th><th>Buffer</th><th>Price</th><th>Status</th><th>Change</th></tr>
+  </thead>
+  <tbody>
+    {{range .Services}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.DurationMinutes}} min</td>
+      <td>{{.BufferMinutes}} min</td>
+      <td>{{money .PriceCents}}</td>
+      <td>{{if .Active}}Active{{else}}Inactive{{end}}</td>
+      <td>
+        <form method="post" action="/app/services/{{.ID}}">
+          <input name="name" type="text" value="{{.Name}}" aria-label="Name" required>
+          <input name="duration_minutes" type="number" min="1" max="1440" value="{{.DurationMinutes}}" aria-label="Duration (minutes)" required>
+          <input name="buffer_minutes" type="number" min="0" max="240" value="{{.BufferMinutes}}" aria-label="Buffer (minutes)" required>
+          <input name="price_cents" type="number" min="0" value="{{.PriceCents}}" aria-label="Price (cents)" required>
+          <button type="submit">Save</button>
+        </form>
+        <form method="post" action="/app/services/{{.ID}}/active">
+          {{if .Active}}
+          <input type="hidden" name="active" value="false">
+          <button type="submit">Deactivate</button>
+          {{else}}
+          <input type="hidden" name="active" value="true">
+          <button type="submit">Activate</button>
+          {{end}}
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No services yet.</p>
+{{end}}
+
+<h2>Staff</h2>
+<form method="post" action="/app/staff">
+  <p>
+    <label for="new-staff-name">Name</label>
+    <input id="new-staff-name" name="name" type="text" required>
+  </p>
+  <p>
+    <label for="new-staff-email">Email</label>
+    <input id="new-staff-email" name="email" type="email" required>
+  </p>
+  <p><button type="submit">Add staff member</button></p>
+</form>
+{{if .Staff}}
+<table>
+  <thead>
+    <tr><th>Name</th><th>Email</th><th>Status</th><th>Change</th></tr>
+  </thead>
+  <tbody>
+    {{range .Staff}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.Email}}</td>
+      <td>{{if .Active}}Active{{else}}Inactive{{end}}</td>
+      <td>
+        <form method="post" action="/app/staff/{{.ID}}">
+          <input name="name" type="text" value="{{.Name}}" aria-label="Name" required>
+          <input name="email" type="email" value="{{.Email}}" aria-label="Email" required>
+          <button type="submit">Save</button>
+        </form>
+        <form method="post" action="/app/staff/{{.ID}}/active">
+          {{if .Active}}
+          <input type="hidden" name="active" value="false">
+          <button type="submit">Deactivate</button>
+          {{else}}
+          <input type="hidden" name="active" value="true">
+          <button type="submit">Activate</button>
+          {{end}}
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No staff yet.</p>
+{{end}}
+{{end}}
