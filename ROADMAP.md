@@ -2,6 +2,9 @@
 
 Exit gate for every milestone: `make check` green in CI, plus the listed test.
 
+Progress: M0 and M1 done — M1 shipped without sqlc, which lands with the first store
+methods. M2 next.
+
 | # | Milestone | Exit criteria | Size |
 |---|---|---|---|
 | M0 | Scaffold + guardrails | Healthz/readyz endpoints, all guardrail files, CI required on main | 1 evening |
@@ -18,4 +21,4 @@ Exit gate for every milestone: `make check` green in CI, plus the listed test.
 - M6 is the only open-ended milestone.
 - Cut order if short on time: ICS export, then reschedule, then staff time off.
 - Never cut M1 or M4.
-- sqlc, goose and templ tool directives are added in M1, not M0.
+- Tool directives: goose in M1; templ in M6; sqlc with the first store methods (M2).
