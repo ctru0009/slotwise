@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ctru0009/slotwise/internal/domain"
+	"github.com/ctru0009/slotwise/internal/testsupport/pgtest"
 )
 
 // TestConcurrentBookingsForOneSlot fires attempts at the same staff member and
@@ -19,11 +20,11 @@ import (
 func TestConcurrentBookingsForOneSlot(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	appDSN, ownerDSN := startPostgres(t)
-	owner := newOwnerPool(t, ownerDSN)
-	tenant := seed(t, owner, "race")
+	appDSN, ownerDSN := pgtest.Start(t)
+	owner := pgtest.Owner(t, ownerDSN)
+	tenant := pgtest.Seed(t, owner, "race")
 
-	db := newAppDB(t, appDSN)
+	db := pgtest.AppDB(t, appDSN)
 
 	const attempts = 100
 
@@ -39,12 +40,12 @@ func TestConcurrentBookingsForOneSlot(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			err := db.WithTenant(ctx, tenant.tenant, func(ctx context.Context, tx pgx.Tx) error {
+			err := db.WithTenant(ctx, tenant.Tenant, func(ctx context.Context, tx pgx.Tx) error {
 				// Take the staff row first: without it, concurrent inserts for
 				// one slot deadlock on the exclusion constraint's index instead
 				// of queueing, and the losers never see ErrSlotTaken.
 				if _, err := tx.Exec(ctx,
-					"SELECT 1 FROM staff WHERE id = $1::uuid FOR UPDATE", tenant.staff.String()); err != nil {
+					"SELECT 1 FROM staff WHERE id = $1::uuid FOR UPDATE", tenant.Staff.String()); err != nil {
 					return err
 				}
 				_, execErr := tx.Exec(ctx, `
@@ -52,7 +53,7 @@ func TestConcurrentBookingsForOneSlot(t *testing.T) {
 					                      starts_at, ends_at, status, idempotency_key)
 					VALUES ($1::uuid, $2::uuid, $3::uuid, 'Racer', 'racer@example.com',
 					        '2026-11-02T09:00:00Z', '2026-11-02T09:30:00Z', 'confirmed', $4)`,
-					tenant.tenant.String(), tenant.staff.String(), tenant.service.String(),
+					tenant.Tenant.String(), tenant.Staff.String(), tenant.Service.String(),
 					fmt.Sprintf("race-%d", n))
 				return execErr
 			})
