@@ -42,6 +42,28 @@ CREATE TABLE sessions (
 );
 CREATE INDEX sessions_expiry_idx ON sessions (expiry);
 
+-- 0001's grant block only ran if the application role already existed, and
+-- goose records a migration even when that guard no-ops, so a deployment that
+-- created the role later ends up with no default privileges at all. 0002
+-- re-applied the envelope for the tables it could see; the tables above are
+-- created after that, so re-apply it here too, before the revokes below. This
+-- is the same failure 0002 exists to prevent: a green migration and then
+-- "permission denied for table users" at the first login.
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'slotwise_app') THEN
+        RAISE EXCEPTION 'role slotwise_app must exist before migrating: create it first, or the application will have no privileges';
+    END IF;
+
+    GRANT USAGE ON SCHEMA public TO slotwise_app;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO slotwise_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO slotwise_app;
+END
+$$;
+-- +goose StatementEnd
+
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users FORCE ROW LEVEL SECURITY;
 CREATE POLICY users_isolation ON users
@@ -60,6 +82,18 @@ ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
 -- hands every later table in public to slotwise_app, so revoke it explicitly,
 -- the same treatment goose_db_version got in 0002.
 REVOKE ALL ON TABLE sessions FROM slotwise_app;
+
+-- The envelope above reaches goose's bookkeeping table as well; 0002 revoked it
+-- for the same reason, so re-apply that decision here.
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF to_regclass('public.goose_db_version') IS NOT NULL THEN
+        REVOKE ALL ON TABLE goose_db_version FROM slotwise_app;
+    END IF;
+END
+$$;
+-- +goose StatementEnd
 
 -- The resolver functions below run as their owner. FORCE ROW LEVEL SECURITY
 -- applies to the table owner too, so a migration role that is neither superuser

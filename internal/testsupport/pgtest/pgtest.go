@@ -82,12 +82,15 @@ func StartBare(t *testing.T) (appDSN, ownerDSN string) {
 func Start(t *testing.T) (appDSN, ownerDSN string) {
 	t.Helper()
 	appDSN, ownerDSN = StartBare(t)
-	createAppRole(t, ownerDSN)
+	CreateAppRole(t, ownerDSN)
 	migrate(t, ownerDSN)
 	return appDSN, ownerDSN
 }
 
-func createAppRole(t *testing.T, ownerDSN string) {
+// CreateAppRole creates the non-owner role the application connects as. It is
+// separate from Start so a test can drive the deployment path where the role
+// arrives after the first migration has already been recorded.
+func CreateAppRole(t *testing.T, ownerDSN string) {
 	t.Helper()
 	owner := Owner(t, ownerDSN)
 	_, err := owner.Exec(t.Context(),

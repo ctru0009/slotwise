@@ -48,6 +48,44 @@ func assertTenantResolverExposesOnlyPublicColumns(t *testing.T, pool *pgxpool.Po
 	}
 }
 
+// TestMigrationsGrantTheAppRoleWhenItArrivesLate covers the deployment path the
+// first assertion in TestMigrationsRequireTheAppRole stops: 0001 runs before the
+// application role exists, its grant block no-ops, and goose records it anyway,
+// so 0001's default privileges are never applied. Every migration that creates
+// tables after that has to re-apply the envelope, or the deployment ends up with
+// a green migration and "permission denied for table users" at the first login.
+func TestMigrationsGrantTheAppRoleWhenItArrivesLate(t *testing.T) {
+	t.Parallel()
+	appDSN, ownerDSN := pgtest.StartBare(t)
+
+	if err := pgtest.Migrate(t.Context(), ownerDSN); err == nil {
+		t.Fatal("migrations succeeded without the slotwise_app role, so this test is not exercising the path it claims")
+	}
+	pgtest.CreateAppRole(t, ownerDSN)
+	if err := pgtest.Migrate(t.Context(), ownerDSN); err != nil {
+		t.Fatalf("migrating after the role arrived: %v", err)
+	}
+
+	pool := pgtest.AppPool(t, appDSN)
+	for table, want := range map[string]bool{
+		"users":                 true,
+		"password_reset_tokens": true,
+		"sessions":              false,
+		"goose_db_version":      false,
+	} {
+		var reachable bool
+		err := pool.QueryRow(t.Context(),
+			"SELECT has_table_privilege(current_user, $1, 'SELECT,INSERT,UPDATE,DELETE')",
+			"public."+table).Scan(&reachable)
+		if err != nil {
+			t.Fatalf("checking access to %s: %v", table, err)
+		}
+		if reachable != want {
+			t.Errorf("the app role can reach %s = %v, want %v", table, reachable, want)
+		}
+	}
+}
+
 // TestMigrationsRequireTheAppRole pins the deploy-time guard. 0001 granted
 // privileges only when the application role already existed, so a deployment
 // that created it later got a green migration and then failed at request time
