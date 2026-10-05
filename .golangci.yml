@@ -1,0 +1,75 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - errorlint
+    - wrapcheck
+    - gosec
+    - bodyclose
+    - noctx
+    - contextcheck
+    - exhaustive
+    - forbidigo
+    - depguard
+    - gocritic
+    - revive
+    - gocyclo
+    - nestif
+    - funlen
+    - nolintlint
+    - testifylint
+    - paralleltest
+    - thelper
+    - sqlclosecheck
+    - rowserrcheck
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    funlen: { lines: 80, statements: 50 }
+    gocyclo: { min-complexity: 12 }
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+        - pattern: ^panic$
+        - pattern: ^time\.Now$
+          msg: inject a clock.Clock instead
+        - pattern: ^context\.(Background|TODO)$
+          msg: accept a ctx from the caller
+        - pattern: ^http\.Error$
+          msg: use the web package's error renderer
+    depguard:
+      rules:
+        domain-pure:
+          files: ["**/internal/domain/**"]
+          deny:
+            - { pkg: database/sql, desc: domain is pure }
+            - { pkg: net/http, desc: domain is pure }
+            - { pkg: github.com/jackc/pgx, desc: domain is pure }
+            - { pkg: github.com/ctru0009/slotwise/internal/app, desc: dependencies point inward }
+            - { pkg: github.com/ctru0009/slotwise/internal/adapters, desc: dependencies point inward }
+        app-no-io:
+          files: ["**/internal/app/**"]
+          deny:
+            - { pkg: net/http, desc: app has no transport }
+            - { pkg: github.com/jackc/pgx, desc: app uses store interfaces }
+            - { pkg: github.com/a-h/templ, desc: app has no views }
+            - { pkg: github.com/ctru0009/slotwise/internal/adapters, desc: dependencies point inward }
+        web-no-db:
+          files: ["**/internal/adapters/web/**"]
+          deny:
+            - { pkg: github.com/jackc/pgx, desc: web goes through app }
+            - { pkg: github.com/ctru0009/slotwise/internal/adapters/postgres, desc: web goes through app }
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [forbidigo, funlen, wrapcheck]
+      - path: ^cmd/
+        linters: [forbidigo]
+formatters:
+  enable: [gofumpt, goimports]

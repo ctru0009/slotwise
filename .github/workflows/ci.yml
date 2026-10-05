@@ -1,0 +1,22 @@
+name: ci
+on:
+  pull_request:
+  push: { branches: [main] }
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: make check
+      - name: Generated code is committed
+        run: git diff --exit-code
+      - name: Migrations are append-only
+        run: |
+          git fetch origin main
+          if git diff --name-status origin/main...HEAD -- migrations | grep -Ev '^A\s'; then
+            echo "Existing migrations must not be modified or deleted"; exit 1
+          fi
+      - run: go build ./... && go mod verify
