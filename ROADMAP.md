@@ -22,3 +22,8 @@ methods. M2 next.
 - Cut order if short on time: ICS export, then reschedule, then staff time off.
 - Never cut M1 or M4.
 - Tool directives: goose in M1; templ in M6; sqlc with the first store methods (M2).
+- M2/M6: `GET /b/{slug}` needs a slug to tenant-id lookup, which the `tenants` policy
+  deliberately does not allow (with no tenant set it matches no rows). Add a narrowly scoped
+  `SECURITY DEFINER` resolver with a pinned `search_path` that returns only id/name/timezone
+  — do not widen the policy and do not connect with `BYPASSRLS`, both of which would silently
+  remove the isolation that M1 exists to establish.
