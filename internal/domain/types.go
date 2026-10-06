@@ -1,6 +1,10 @@
 package domain
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // Tenant is one customer business, addressed publicly by its slug.
 type Tenant struct {
@@ -48,6 +52,40 @@ type Service struct {
 	BufferMinutes   int
 	PriceCents      int
 	Active          bool
+}
+
+// Block is duration + buffer, the calendar a booking occupies.
+func (s Service) Block() time.Duration {
+	return time.Duration(s.DurationMinutes+s.BufferMinutes) * time.Minute
+}
+
+// BookingStatus is where a booking sits in its lifecycle.
+type BookingStatus string
+
+// The statuses the bookings.status check constraint accepts.
+const (
+	BookingConfirmed BookingStatus = "confirmed"
+	BookingCancelled BookingStatus = "cancelled"
+)
+
+// Valid reports whether s is a status the database accepts.
+func (s BookingStatus) Valid() bool {
+	return s == BookingConfirmed || s == BookingCancelled
+}
+
+// Booking is one appointment. EndsAt is the occupied end: StartsAt plus the
+// service's duration and buffer.
+type Booking struct {
+	ID            uuid.UUID
+	TenantID      uuid.UUID
+	StaffID       uuid.UUID
+	ServiceID     uuid.UUID
+	CustomerName  string
+	CustomerEmail string
+	StartsAt      time.Time
+	EndsAt        time.Time
+	Status        BookingStatus
+	CreatedAt     time.Time
 }
 
 // Staff is a bookable staff member.

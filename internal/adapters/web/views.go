@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/ctru0009/slotwise/internal/domain"
 )
@@ -18,6 +21,8 @@ const (
 	PageForgot    = "forgot"
 	PageReset     = "reset"
 	PageDashboard = "dashboard"
+	PageSlots     = "slots"
+	PageBooking   = "booking"
 	PageError     = "error"
 )
 
@@ -28,6 +33,8 @@ var pageNames = []string{
 	PageForgot,
 	PageReset,
 	PageDashboard,
+	PageSlots,
+	PageBooking,
 	PageError,
 }
 
@@ -69,6 +76,36 @@ type DashboardPage struct {
 	Services []domain.Service
 	Staff    []domain.Staff
 	Error    string
+}
+
+// SlotView is one bookable start with the key the form that books it submits.
+// The key is minted per rendered form, so a resubmitted form replays one
+// booking instead of creating another.
+type SlotView struct {
+	StaffID        uuid.UUID
+	StartsAt       time.Time
+	IdempotencyKey string
+}
+
+// SlotsPage is the public list of bookable starts for one service over a local
+// date range, with the tenant's clock the times are rendered on and the range
+// the search form resubmits.
+type SlotsPage struct {
+	Tenant    domain.Tenant
+	Location  *time.Location
+	ServiceID uuid.UUID
+	From      string
+	To        string
+	Slots     []SlotView
+}
+
+// BookingPage is one booking: its details on the tenant's clock and the form
+// that cancels it with the token from the signed link.
+type BookingPage struct {
+	Tenant   domain.Tenant
+	Location *time.Location
+	Booking  domain.Booking
+	Token    string
 }
 
 // ErrorPage renders an HTTP status and a human-readable message.
@@ -114,7 +151,16 @@ func (v *Views) Render(w io.Writer, page string, data any) error {
 
 // templateFuncs returns the helpers every page template can call.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"money": money}
+	return template.FuncMap{"money": money, "localTime": localTime}
+}
+
+// localTime renders an instant on a tenant's clock, so a page reads in the
+// timezone the business works in. A nil location renders in UTC.
+func localTime(t time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return t.In(loc).Format("Mon 2 Jan 2006 15:04 MST")
 }
 
 // money renders an integer number of cents as a decimal amount, for example

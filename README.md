@@ -3,11 +3,13 @@
 Multi-tenant booking app for small service businesses — barbers, physios, tutors.
 Customers book from a public page; owners and staff manage services, hours and bookings.
 
-**Status: M3 complete.** M1's schema, forced row level security and tenant-scoped
-transaction helper, M2's auth and owner/staff dashboard, and M3's slot engine: weekly
+**Status: M4 complete.** M1's schema, forced row level security and tenant-scoped
+transaction helper, M2's auth and owner/staff dashboard, M3's slot engine: weekly
 availability rules, time off and service buffers feed a pure-domain search that returns
 bookable starts for a local date range in the tenant's IANA timezone, with DST transitions
-and half-open overlaps handled and tested against a real Postgres. Scope and hard
+and half-open overlaps handled and tested against a real Postgres, and M4's booking flow:
+idempotent public creates behind a signed cancel link, with the staff row lock and the
+exclusion constraint picking exactly one winner under contention. Scope and hard
 requirements live in [SPEC.md](SPEC.md); milestones and exit criteria in
 [ROADMAP.md](ROADMAP.md); working rules in [AGENTS.md](AGENTS.md).
 
@@ -81,6 +83,7 @@ idempotently, on startup:
 
 ```sh
 DATABASE_URL=... SLOTWISE_BASE_URL=https://slotwise.example \
+SLOTWISE_CANCEL_SECRET=... \
 SLOTWISE_BOOTSTRAP_SLUG=demo SLOTWISE_BOOTSTRAP_NAME="Demo Salon" \
 SLOTWISE_BOOTSTRAP_TIMEZONE=Europe/Berlin \
 SLOTWISE_BOOTSTRAP_OWNER_EMAIL=owner@example.com \
@@ -91,6 +94,21 @@ A partial `SLOTWISE_BOOTSTRAP_*` group fails startup instead of quietly serving 
 tenant, and the slug has to stay clear of `services` and `staff`, which the router uses.
 `SLOTWISE_COOKIE_SECURE=1` marks the session cookie `Secure`. Until M5 wires a real
 provider, outbound mail — reset links included — goes to the log.
+
+`SLOTWISE_CANCEL_SECRET` (at least 32 bytes) signs the public cancel links and is required:
+the routes it protects are unauthenticated, so the token is the only credential they take.
+
+## Booking
+
+`GET /b/{slug}/slots?service=&from=&to=` lists bookable starts for one business, and
+`POST /b/{slug}/bookings` books one. The create requires an `Idempotency-Key` header, with
+the hidden form field as the browser fallback, and answers `303` with the booking's page as
+its `Location`: `GET /b/{slug}/bookings/{id}?token=…` shows the booking and the form that
+`POST /b/{slug}/bookings/{id}/cancel` cancels it. Replaying a key returns the booking it
+already made — cancelled or not — instead of booking again, and cancelling twice succeeds.
+Both public routes are rate limited in memory (10 creates per customer account and 60 per
+business, 600 searches per business, per 15 minutes); the buckets are a guardrail against a
+runaway client, not a denial-of-service defence.
 
 ## Guardrails
 

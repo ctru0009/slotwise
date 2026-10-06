@@ -45,7 +45,7 @@ func NewAvailability(store AvailabilityStore, tenants TenantStore, clk clock.Clo
 // over the inclusive local date range, ordered by start and then staff id. The
 // result is never nil.
 func (a *Availability) Search(ctx context.Context, tenantID, serviceID uuid.UUID, from, to domain.LocalDate) ([]domain.Slot, error) {
-	loc, err := a.location(ctx, tenantID)
+	loc, err := tenantLocation(ctx, a.tenants, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -59,20 +59,10 @@ func (a *Availability) Search(ctx context.Context, tenantID, serviceID uuid.UUID
 		return nil, fmt.Errorf("reading slot snapshot: %w", err)
 	}
 
-	block := time.Duration(snapshot.Service.DurationMinutes+snapshot.Service.BufferMinutes) * time.Minute
 	notBefore := a.clock.Now()
 	slots := []domain.Slot{}
 	for _, schedule := range snapshot.Staff {
-		starts := domain.SlotTimes(domain.SlotQuery{
-			Location:  loc,
-			Rules:     schedule.Rules,
-			Busy:      schedule.Busy,
-			TimeOff:   schedule.TimeOff,
-			From:      from,
-			To:        to,
-			Block:     block,
-			NotBefore: notBefore,
-		})
+		starts := domain.SlotTimes(slotQuery(loc, snapshot.Service, schedule, from, to, notBefore))
 		for _, start := range starts {
 			slots = append(slots, domain.Slot{StaffID: schedule.Staff.ID, Start: start})
 		}
@@ -134,7 +124,7 @@ func (a *Availability) AddTimeOff(ctx context.Context, actor domain.User, staffI
 	if err := validateDateRange(from, to, maxTimeOffDays, "must span at most 366 days"); err != nil {
 		return err
 	}
-	loc, err := a.location(ctx, actor.TenantID)
+	loc, err := tenantLocation(ctx, a.tenants, actor.TenantID)
 	if err != nil {
 		return err
 	}
@@ -160,10 +150,10 @@ func (a *Availability) RemoveTimeOff(ctx context.Context, actor domain.User, sta
 	return nil
 }
 
-// location loads the tenant's IANA timezone, which every wall-clock conversion
-// in the request goes through.
-func (a *Availability) location(ctx context.Context, tenantID uuid.UUID) (*time.Location, error) {
-	tenant, err := a.tenants.TenantByID(ctx, tenantID)
+// tenantLocation loads a tenant's IANA timezone. Both the search and the
+// booking path resolve the tenant's own clock through it.
+func tenantLocation(ctx context.Context, tenants TenantStore, tenantID uuid.UUID) (*time.Location, error) {
+	tenant, err := tenants.TenantByID(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("resolving tenant: %w", err)
 	}
@@ -172,6 +162,21 @@ func (a *Availability) location(ctx context.Context, tenantID uuid.UUID) (*time.
 		return nil, fmt.Errorf("loading tenant timezone %q: %w", tenant.Timezone, err)
 	}
 	return loc, nil
+}
+
+// slotQuery assembles the engine input for one staff member, so the search and
+// the booking path cannot drift apart in what they consider bookable.
+func slotQuery(loc *time.Location, service domain.Service, schedule domain.StaffSchedule, from, to domain.LocalDate, notBefore time.Time) domain.SlotQuery {
+	return domain.SlotQuery{
+		Location:  loc,
+		Rules:     schedule.Rules,
+		Busy:      schedule.Busy,
+		TimeOff:   schedule.TimeOff,
+		From:      from,
+		To:        to,
+		Block:     service.Block(),
+		NotBefore: notBefore,
+	}
 }
 
 // normaliseRules validates every rule, drops exact duplicates and sorts by

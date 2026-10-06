@@ -36,6 +36,14 @@ const (
 	// the token is valid, so its budget is per business and generous enough for
 	// somebody retrying a link.
 	resetSubmitLimit = 30
+	// Booking is unauthenticated, so both public routes are throttled: a create
+	// per business and per customer account, and a slot search per business,
+	// since one search reads a day of grid for every staff member.
+	bookingLimit       = 10
+	bookingTenantLimit = 60
+	bookingWindow      = 15 * time.Minute
+	slotsLimit         = 600
+	slotsWindow        = 15 * time.Minute
 )
 
 // bootstrapVars are the environment variables that provision the first tenant
@@ -120,6 +128,9 @@ type config struct {
 	baseURL      string
 	cookieSecure bool
 	bootstrap    bootstrapEnv
+	// cancelSecret signs the public cancel links. It is required: without it
+	// the routes would either refuse every link or accept forged ones.
+	cancelSecret string
 	clock        clock.Clock
 	sender       app.Sender
 }
@@ -132,12 +143,16 @@ func loadConfig(getenv func(string) string) (config, error) {
 		baseURL:      getenv("SLOTWISE_BASE_URL"),
 		cookieSecure: getenv("SLOTWISE_COOKIE_SECURE") == "1",
 		bootstrap:    bootstrapEnv{slug: getenv("SLOTWISE_BOOTSTRAP_SLUG")},
+		cancelSecret: getenv("SLOTWISE_CANCEL_SECRET"),
 	}
 	if cfg.databaseURL == "" {
 		return config{}, errors.New("DATABASE_URL is required")
 	}
 	if cfg.baseURL == "" {
 		cfg.baseURL = defaultBaseURL
+	}
+	if cfg.cancelSecret == "" {
+		return config{}, errors.New("SLOTWISE_CANCEL_SECRET is required")
 	}
 	if err := cfg.bootstrap.load(getenv); err != nil {
 		return config{}, err
@@ -209,6 +224,10 @@ func wire(ctx context.Context, cfg config, logger *slog.Logger) (*http.Server, f
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading views: %w", err)
 	}
+	signer, err := app.NewCancelSigner(cfg.cancelSecret)
+	if err != nil {
+		return nil, nil, fmt.Errorf("building the cancel signer: %w", err)
+	}
 
 	sessions := scs.New()
 	sessions.Lifetime = sessionLifetime
@@ -218,16 +237,21 @@ func wire(ctx context.Context, cfg config, logger *slog.Logger) (*http.Server, f
 	sessions.Store = postgres.NewSessionStore(ctx, db)
 
 	handler := web.New(web.Deps{
-		Sessions:    sessions,
-		Auth:        auth,
-		Services:    app.NewServices(db),
-		Staff:       app.NewStaff(db),
-		Views:       views,
-		Clock:       clk,
-		Login:       web.NewLimiter(loginLimit, loginWindow),
-		Reset:       web.NewLimiter(resetLimit, resetWindow),
-		ResetSubmit: web.NewLimiter(resetSubmitLimit, resetWindow),
-		BaseURL:     cfg.baseURL,
+		Sessions:      sessions,
+		Auth:          auth,
+		Services:      app.NewServices(db),
+		Staff:         app.NewStaff(db),
+		Availability:  app.NewAvailability(db, db, clk),
+		Bookings:      app.NewBookings(db, db, db, clk, signer),
+		Views:         views,
+		Clock:         clk,
+		Login:         web.NewLimiter(loginLimit, loginWindow),
+		Reset:         web.NewLimiter(resetLimit, resetWindow),
+		ResetSubmit:   web.NewLimiter(resetSubmitLimit, resetWindow),
+		BookingWrites: web.NewLimiter(bookingTenantLimit, bookingWindow),
+		BookingPosts:  web.NewLimiter(bookingLimit, bookingWindow),
+		SlotSearches:  web.NewLimiter(slotsLimit, slotsWindow),
+		BaseURL:       cfg.baseURL,
 	})
 
 	// The probe endpoints sit outside the application router so they stay

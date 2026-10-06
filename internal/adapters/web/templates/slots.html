@@ -1,0 +1,52 @@
+{{define "content"}}
+<h1>{{.Tenant.Name}}</h1>
+
+<form method="get" action="/b/{{.Tenant.Slug}}/slots">
+  <input type="hidden" name="service" value="{{.ServiceID}}">
+  <p>
+    <label for="from">From</label>
+    <input id="from" name="from" type="date" value="{{.From}}" required>
+  </p>
+  <p>
+    <label for="to">To</label>
+    <input id="to" name="to" type="date" value="{{.To}}">
+  </p>
+  <p><button type="submit">Show times</button></p>
+</form>
+
+<h2>Available times</h2>
+{{if .Slots}}
+<table>
+  <thead>
+    <tr><th>Start</th><th>Staff</th><th>Book</th></tr>
+  </thead>
+  <tbody>
+    {{range .Slots}}
+    <tr>
+      <td>{{localTime .StartsAt $.Location}}</td>
+      <td>{{.StaffID}}</td>
+      <td>
+        <form method="post" action="/b/{{$.Tenant.Slug}}/bookings">
+          <input type="hidden" name="service_id" value="{{$.ServiceID}}">
+          <input type="hidden" name="staff_id" value="{{.StaffID}}">
+          <input type="hidden" name="starts_at" value="{{.StartsAt.Format "2006-01-02T15:04:05Z07:00"}}">
+          <input type="hidden" name="idempotency_key" value="{{.IdempotencyKey}}">
+          <p>
+            <label for="name-{{.IdempotencyKey}}">Name</label>
+            <input id="name-{{.IdempotencyKey}}" name="customer_name" type="text" required>
+          </p>
+          <p>
+            <label for="email-{{.IdempotencyKey}}">Email</label>
+            <input id="email-{{.IdempotencyKey}}" name="customer_email" type="email" required>
+          </p>
+          <p><button type="submit">Book</button></p>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No times are available in that range.</p>
+{{end}}
+{{end}}

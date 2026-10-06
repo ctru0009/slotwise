@@ -1,6 +1,11 @@
 package app
 
-import "regexp"
+import (
+	"regexp"
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // slugPattern is what a public tenant slug may look like: lower-case letters,
 // digits and inner hyphens, 1 to 63 characters.
@@ -30,6 +35,17 @@ type ServiceInput struct {
 type StaffInput struct {
 	Name  string
 	Email string
+}
+
+// BookingInput is a public booking request. Validation lives in
+// BookingInput.validate, so no handler can store an unchecked booking.
+type BookingInput struct {
+	ServiceID      uuid.UUID
+	StaffID        uuid.UUID
+	StartsAt       time.Time
+	CustomerName   string
+	CustomerEmail  string
+	IdempotencyKey string
 }
 
 // BootstrapInput is the environment-driven provisioning of one tenant and its
