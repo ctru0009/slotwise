@@ -90,6 +90,24 @@ type AvailabilityStore interface {
 	DeleteTimeOff(ctx context.Context, tenantID, staffID, id uuid.UUID) error
 }
 
+// BookingStore is the persistence the bookings use case needs.
+type BookingStore interface {
+	// BookingByIdempotencyKey returns the booking a key already created, or
+	// domain.ErrNotFound. The lookup is tenant-scoped, so the same key in
+	// another tenant is a different booking.
+	BookingByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key string) (domain.Booking, error)
+	// CreateBooking stores the booking, or returns the stored one when the key
+	// already booked. An insert overlapping a confirmed booking reports
+	// domain.ErrSlotTaken; a staff member who is unknown, invisible or
+	// deactivated reports domain.ErrNotFound.
+	CreateBooking(ctx context.Context, tenantID uuid.UUID, in BookingWrite) (domain.Booking, error)
+	// BookingByID returns the booking with this id, or domain.ErrNotFound.
+	BookingByID(ctx context.Context, tenantID, id uuid.UUID) (domain.Booking, error)
+	// CancelBooking marks the booking cancelled. Cancelling a cancelled
+	// booking succeeds; an unknown or invisible id reports domain.ErrNotFound.
+	CancelBooking(ctx context.Context, tenantID, id uuid.UUID) error
+}
+
 // Sender delivers outbound messages. Development wires the logging
 // implementation; M5 adds the real one for confirmations and reminders.
 type Sender interface {
