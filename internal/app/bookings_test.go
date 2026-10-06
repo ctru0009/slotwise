@@ -28,12 +28,26 @@ type fakeBookingStore struct {
 	createErr error
 	readErr   error
 	cancelErr error
+
+	// lookupErrs schedules the outcome of the next key lookups: an entry
+	// replaces what that call returns, so a test can model a row landing
+	// between the replay check and the snapshot (domain.ErrNotFound) or a read
+	// that fails there. A nil entry, or a spent schedule, reads the stored
+	// rows.
+	lookupErrs []error
 }
 
 func (f *fakeBookingStore) BookingByIdempotencyKey(_ context.Context, tenantID uuid.UUID, key string) (domain.Booking, error) {
 	f.lookups++
 	if f.lookupErr != nil {
 		return domain.Booking{}, f.lookupErr
+	}
+	if len(f.lookupErrs) > 0 {
+		scheduled := f.lookupErrs[0]
+		f.lookupErrs = f.lookupErrs[1:]
+		if scheduled != nil {
+			return domain.Booking{}, scheduled
+		}
 	}
 	booking, ok := f.byKey[key]
 	if !ok || booking.TenantID != tenantID {
@@ -302,6 +316,69 @@ func TestCreateSnapshotCoversTheStartsLocalDay(t *testing.T) {
 	wantTo := time.Date(2026, time.November, 2, 23, 0, 0, 0, time.UTC)
 	if !f.avail.snapshotFrom.Equal(wantFrom) || !f.avail.snapshotTo.Equal(wantTo) {
 		t.Errorf("snapshot range = [%v, %v), want [%v, %v)", f.avail.snapshotFrom, f.avail.snapshotTo, wantFrom, wantTo)
+	}
+}
+
+// TestCreateVetoIsResolvedByTheKey covers the race the replay check cannot: a
+// concurrent request with the same key stores the booking after that check and
+// before the snapshot, so the calendar then reads the window as busy. The key
+// still decides, or a retry racing its own first attempt would be turned away.
+func TestCreateVetoIsResolvedByTheKey(t *testing.T) {
+	t.Parallel()
+	f := newBookingFixture(t)
+	in := f.request(t, 9, 0, "key-1")
+	stored := domain.Booking{
+		ID:        uuid.New(),
+		TenantID:  f.tenantID,
+		StaffID:   f.staffID,
+		ServiceID: f.service.ID,
+		StartsAt:  in.StartsAt,
+		EndsAt:    in.StartsAt.Add(40 * time.Minute),
+		Status:    domain.BookingConfirmed,
+	}
+	f.bookings.store(stored, "key-1")
+	// The first lookup misses, as it would before the concurrent insert
+	// committed; the snapshot then sees the row as busy.
+	f.bookings.lookupErrs = []error{domain.ErrNotFound}
+	f.avail.snapshot.Staff[0].Busy = []domain.Interval{{Start: stored.StartsAt, End: stored.EndsAt}}
+
+	booking, err := f.useCase.Create(t.Context(), f.tenantID, in)
+	if err != nil {
+		t.Fatalf("Create racing its own key: %v", err)
+	}
+	if booking.ID != stored.ID {
+		t.Errorf("Create returned %s, want the stored %s", booking.ID, stored.ID)
+	}
+	if f.bookings.creates != 0 {
+		t.Errorf("the raced Create inserted %d times, want 0", f.bookings.creates)
+	}
+}
+
+// TestCreateVetoRelaysAKeyLookupFailure is the other half of the veto rule: a
+// lookup that fails while resolving the veto is relayed, rather than becoming a
+// slot-taken verdict that hides a broken read.
+func TestCreateVetoRelaysAKeyLookupFailure(t *testing.T) {
+	t.Parallel()
+	f := newBookingFixture(t)
+	in := f.request(t, 9, 0, "key-1")
+	lookupErr := errors.New("lookup failed")
+	// The first lookup misses; the snapshot then reads the window as busy, and
+	// the lookup that resolves the veto fails.
+	f.bookings.lookupErrs = []error{domain.ErrNotFound, lookupErr}
+	f.avail.snapshot.Staff[0].Busy = []domain.Interval{{
+		Start: in.StartsAt,
+		End:   in.StartsAt.Add(40 * time.Minute),
+	}}
+
+	_, err := f.useCase.Create(t.Context(), f.tenantID, in)
+	if !errors.Is(err, lookupErr) {
+		t.Fatalf("Create = %v, want the lookup failure", err)
+	}
+	if errors.Is(err, domain.ErrSlotTaken) {
+		t.Errorf("Create = %v, want the lookup failure rather than a taken slot", err)
+	}
+	if f.bookings.creates != 0 {
+		t.Errorf("Create inserted %d times, want 0", f.bookings.creates)
 	}
 }
 

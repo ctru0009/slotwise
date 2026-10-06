@@ -90,7 +90,7 @@ func (b *Bookings) Create(ctx context.Context, tenantID uuid.UUID, in BookingInp
 	}
 	query := slotQuery(loc, snapshot.Service, schedule, date, date, b.clock.Now())
 	if !slices.ContainsFunc(domain.SlotTimes(query), func(start time.Time) bool { return start.Equal(in.StartsAt) }) {
-		return domain.Booking{}, fmt.Errorf("slot %s: %w", in.StartsAt, domain.ErrSlotTaken)
+		return b.resolveVeto(ctx, tenantID, in)
 	}
 
 	booking, err := b.store.CreateBooking(ctx, tenantID, BookingWrite{
@@ -106,6 +106,24 @@ func (b *Bookings) Create(ctx context.Context, tenantID uuid.UUID, in BookingInp
 		return domain.Booking{}, fmt.Errorf("creating booking: %w", err)
 	}
 	return booking, nil
+}
+
+// resolveVeto answers a start the slot engine did not offer. A concurrent
+// request with the same key can store the booking between the replay check and
+// the snapshot, and its row then reads as busy, so the key decides before the
+// slot is reported taken — exactly as it does on the store's own failure path.
+// A lookup that fails is relayed rather than turned into a verdict the caller
+// could act on.
+func (b *Bookings) resolveVeto(ctx context.Context, tenantID uuid.UUID, in BookingInput) (domain.Booking, error) {
+	existing, err := b.store.BookingByIdempotencyKey(ctx, tenantID, in.IdempotencyKey)
+	switch {
+	case err == nil:
+		return existing, nil
+	case errors.Is(err, domain.ErrNotFound):
+		return domain.Booking{}, fmt.Errorf("slot %s: %w", in.StartsAt, domain.ErrSlotTaken)
+	default:
+		return domain.Booking{}, fmt.Errorf("resolving the key after a slot veto: %w", err)
+	}
 }
 
 // Get returns the booking a signed cancel link names. A token that does not
