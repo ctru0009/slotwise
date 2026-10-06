@@ -11,18 +11,26 @@ import (
 
 // Deps is everything the HTTP layer needs from the outside.
 type Deps struct {
-	Sessions *scs.SessionManager
-	Auth     *app.Auth
-	Services *app.Services
-	Staff    *app.Staff
-	Views    *Views
-	Clock    clock.Clock
-	Login    *Limiter
-	Reset    *Limiter
+	Sessions     *scs.SessionManager
+	Auth         *app.Auth
+	Services     *app.Services
+	Staff        *app.Staff
+	Availability *app.Availability
+	Bookings     *app.Bookings
+	Views        *Views
+	Clock        clock.Clock
+	Login        *Limiter
+	Reset        *Limiter
 	// ResetSubmit throttles the unauthenticated reset form, which hashes a
 	// submitted password before it can know whether the token is any good.
 	ResetSubmit *Limiter
-	BaseURL     string
+	// BookingWrites throttles the public booking form per business, and
+	// BookingPosts the same form per customer account; SlotSearches throttles
+	// the public slot list, which reads a day of grid for every staff member.
+	BookingWrites *Limiter
+	BookingPosts  *Limiter
+	SlotSearches  *Limiter
+	BaseURL       string
 }
 
 // server holds the dependencies every handler shares.
@@ -40,6 +48,13 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /login", s.loginStart)
 	mux.HandleFunc("POST /app/logout", s.endSession)
 	mux.HandleFunc("GET /app", s.withUser(s.dashboard))
+
+	// The public booking routes take no session: the customer is not signed in,
+	// and the cancel routes carry their own signed token.
+	mux.HandleFunc("GET /b/{slug}/slots", s.slots)
+	mux.HandleFunc("POST /b/{slug}/bookings", s.createBooking)
+	mux.HandleFunc("GET /b/{slug}/bookings/{id}", s.bookingPage)
+	mux.HandleFunc("POST /b/{slug}/bookings/{id}/cancel", s.cancelBooking)
 
 	// The tenant account routes and the services/staff routes cannot share
 	// one mux: POST /app/{slug}/login and POST /app/services/{id} overlap at

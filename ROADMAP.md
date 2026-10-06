@@ -2,8 +2,8 @@
 
 Exit gate for every milestone: `make check` green in CI, plus the listed test.
 
-Progress: M0–M3 done. M1 shipped without sqlc, which landed in M2 with the first
-store methods. M4 (booking + concurrency) next.
+Progress: M0–M4 done. M1 shipped without sqlc, which landed in M2 with the first
+store methods. M5 (jobs + reminders) next.
 
 | # | Milestone | Exit criteria | Size |
 |---|---|---|---|

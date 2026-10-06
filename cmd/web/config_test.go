@@ -10,18 +10,46 @@ func envMap(values map[string]string) func(string) string {
 	return func(key string) string { return values[key] }
 }
 
+// testCancelKey is long enough for app.NewCancelSigner, so loadConfig
+// accepts it wherever a test needs the rest of the environment.
+const testCancelKey = "config-test-cancel-secret-32-bytes-plus"
+
+// requiredEnv is the environment every configuration needs, whatever else it
+// sets.
+func requiredEnv() map[string]string {
+	return map[string]string{
+		"DATABASE_URL":           "postgres://example/db",
+		"SLOTWISE_CANCEL_SECRET": testCancelKey,
+	}
+}
+
 func TestLoadConfigRequiresDatabaseURL(t *testing.T) {
 	t.Parallel()
 
-	if _, err := loadConfig(envMap(nil)); err == nil {
+	if _, err := loadConfig(envMap(map[string]string{"SLOTWISE_CANCEL_SECRET": testCancelKey})); err == nil {
 		t.Fatal("loadConfig without DATABASE_URL returned no error")
+	}
+}
+
+// TestLoadConfigRequiresCancelSecret pins the other required setting: the
+// public cancel routes are signed, so a deployment without the secret cannot
+// serve them.
+func TestLoadConfigRequiresCancelSecret(t *testing.T) {
+	t.Parallel()
+
+	_, err := loadConfig(envMap(map[string]string{"DATABASE_URL": "postgres://example/db"}))
+	if err == nil {
+		t.Fatal("loadConfig without SLOTWISE_CANCEL_SECRET returned no error")
+	}
+	if !strings.Contains(err.Error(), "SLOTWISE_CANCEL_SECRET") {
+		t.Errorf("error %q does not name SLOTWISE_CANCEL_SECRET", err)
 	}
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := loadConfig(envMap(map[string]string{"DATABASE_URL": "postgres://example/db"}))
+	cfg, err := loadConfig(envMap(requiredEnv()))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -34,9 +62,13 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.bootstrap.set() {
 		t.Error("bootstrap is set without any SLOTWISE_BOOTSTRAP_* variable")
 	}
+	if cfg.cancelSecret != testCancelKey {
+		t.Errorf("cancelSecret = %q, want the configured value", cfg.cancelSecret)
+	}
 
 	cfg, err = loadConfig(envMap(map[string]string{
 		"DATABASE_URL":           "postgres://example/db",
+		"SLOTWISE_CANCEL_SECRET": testCancelKey,
 		"SLOTWISE_BASE_URL":      "https://slotwise.example",
 		"SLOTWISE_COOKIE_SECURE": "1",
 	}))
@@ -59,6 +91,7 @@ func TestLoadConfigBootstrapGroup(t *testing.T) {
 
 	complete := map[string]string{
 		"DATABASE_URL":                      "postgres://example/db",
+		"SLOTWISE_CANCEL_SECRET":            testCancelKey,
 		"SLOTWISE_BOOTSTRAP_SLUG":           "demo",
 		"SLOTWISE_BOOTSTRAP_NAME":           "Demo Salon",
 		"SLOTWISE_BOOTSTRAP_TIMEZONE":       "Europe/Berlin",
@@ -102,7 +135,7 @@ func TestLoadConfigBootstrapGroup(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			values := map[string]string{"DATABASE_URL": "postgres://example/db"}
+			values := requiredEnv()
 			for key, value := range tt.values {
 				values[key] = value
 			}

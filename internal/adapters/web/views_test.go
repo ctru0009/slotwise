@@ -6,11 +6,28 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/ctru0009/slotwise/internal/domain"
 )
+
+// berlin is the location the slot and booking pages render their times on.
+func berlin(t *testing.T) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatalf("loading Berlin: %v", err)
+	}
+	return loc
+}
+
+// berlinInstant is a wall time on the Monday the page tests render.
+func berlinInstant(t *testing.T, hour, minute int) time.Time {
+	t.Helper()
+	return time.Date(2026, time.November, 2, hour, minute, 0, 0, berlin(t))
+}
 
 // TestLoadViewsRendersEveryPage proves every embedded page parses and renders
 // a complete document with its data.
@@ -23,6 +40,7 @@ func TestLoadViewsRendersEveryPage(t *testing.T) {
 
 	tenant := domain.Tenant{ID: uuid.New(), Slug: "demo", Name: "Demo Studio", Timezone: "Europe/Berlin"}
 	serviceID, staffID := uuid.New(), uuid.New()
+	bookingID := uuid.New()
 
 	pages := []struct {
 		name string
@@ -79,6 +97,77 @@ func TestLoadViewsRendersEveryPage(t *testing.T) {
 			name: PageDashboard,
 			data: DashboardPage{Tenant: tenant, User: domain.User{Email: "owner@example.com"}},
 			want: []string{"No services yet.", "No staff yet."},
+		},
+		{
+			name: PageSlots,
+			data: SlotsPage{
+				Tenant:    tenant,
+				Location:  berlin(t),
+				ServiceID: serviceID,
+				From:      "2026-11-02",
+				To:        "2026-11-03",
+				Slots: []SlotView{{
+					StaffID:        staffID,
+					StartsAt:       berlinInstant(t, 9, 0),
+					IdempotencyKey: "key-1",
+				}},
+			},
+			want: []string{
+				"Demo Studio", "Available times",
+				`action="/b/demo/slots"`,
+				`name="from" type="date" value="2026-11-02"`,
+				`name="to" type="date" value="2026-11-03"`,
+				`action="/b/demo/bookings"`,
+				`name="service_id" value="` + serviceID.String() + `"`,
+				`name="staff_id" value="` + staffID.String() + `"`,
+				// html/template escapes the + of the RFC3339 offset in an
+				// attribute value; the browser reads it back unescaped.
+				`name="starts_at" value="2026-11-02T09:00:00&#43;01:00"`,
+				`name="idempotency_key" value="key-1"`,
+				"Mon 2 Nov 2026 09:00 CET",
+			},
+		},
+		{
+			name: PageSlots,
+			data: SlotsPage{Tenant: tenant, ServiceID: serviceID},
+			want: []string{"No times are available in that range."},
+		},
+		{
+			name: PageBooking,
+			data: BookingPage{
+				Tenant:   tenant,
+				Location: berlin(t),
+				Booking: domain.Booking{
+					ID:            bookingID,
+					CustomerName:  "Ada Lovelace",
+					CustomerEmail: "ada@example.com",
+					StartsAt:      berlinInstant(t, 9, 0),
+					EndsAt:        berlinInstant(t, 9, 40),
+					Status:        domain.BookingConfirmed,
+				},
+				Token: "tok-123",
+			},
+			want: []string{
+				"Ada Lovelace", "ada@example.com", "Mon 2 Nov 2026 09:00 CET", "Mon 2 Nov 2026 09:40 CET",
+				"confirmed",
+				`action="/b/demo/bookings/` + bookingID.String() + `/cancel"`,
+				`name="token" value="tok-123"`, "Cancel this booking",
+			},
+		},
+		{
+			name: PageBooking,
+			data: BookingPage{
+				Tenant:   tenant,
+				Location: berlin(t),
+				Booking: domain.Booking{
+					ID:       bookingID,
+					StartsAt: berlinInstant(t, 9, 0),
+					EndsAt:   berlinInstant(t, 9, 40),
+					Status:   domain.BookingCancelled,
+				},
+				Token: "tok-123",
+			},
+			want: []string{"cancelled", "This booking is cancelled."},
 		},
 		{
 			name: PageError,

@@ -257,8 +257,12 @@ type harness struct {
 	auth   *app.Auth
 	sender *recordingSender
 	clock  *clock.Fake
-	client *http.Client
-	ts     *httptest.Server
+	// bookingDay is 09:00 Berlin on the next Monday at least two days out: the
+	// day the public booking fixture's week covers. The harness clock reads the
+	// real current time, so the booking tests derive their dates from it.
+	bookingDay time.Time
+	client     *http.Client
+	ts         *httptest.Server
 }
 
 // newHarness starts Postgres and a server over it. Tenants are provisioned by
@@ -276,6 +280,7 @@ func newHarness(t *testing.T) *harness {
 		// now(), so a fake in the past would issue dead links.
 		clock: clock.NewFake(time.Now().UTC()),
 	}
+	h.bookingDay = nextBookingMonday(t)
 
 	db, err := postgres.New(t.Context(), appDSN)
 	if err != nil {
@@ -294,10 +299,11 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) start() {
 	h.t.Helper()
 	srv, cleanup, err := wire(h.t.Context(), config{
-		databaseURL: h.appDSN,
-		baseURL:     testBaseURL,
-		clock:       h.clock,
-		sender:      h.sender,
+		databaseURL:  h.appDSN,
+		baseURL:      testBaseURL,
+		cancelSecret: testCancelKey,
+		clock:        h.clock,
+		sender:       h.sender,
 	}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		h.t.Fatalf("wiring the server: %v", err)
