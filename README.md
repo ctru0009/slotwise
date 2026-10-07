@@ -3,13 +3,16 @@
 Multi-tenant booking app for small service businesses — barbers, physios, tutors.
 Customers book from a public page; owners and staff manage services, hours and bookings.
 
-**Status: M4 complete.** M1's schema, forced row level security and tenant-scoped
+**Status: M5 complete.** M1's schema, forced row level security and tenant-scoped
 transaction helper, M2's auth and owner/staff dashboard, M3's slot engine: weekly
 availability rules, time off and service buffers feed a pure-domain search that returns
 bookable starts for a local date range in the tenant's IANA timezone, with DST transitions
-and half-open overlaps handled and tested against a real Postgres, and M4's booking flow:
+and half-open overlaps handled and tested against a real Postgres, M4's booking flow:
 idempotent public creates behind a signed cancel link, with the staff row lock and the
-exclusion constraint picking exactly one winner under contention. Scope and hard
+exclusion constraint picking exactly one winner under contention, and M5's reliable mail:
+the booking confirmation and the 24h reminder ride a Postgres job queue claimed with
+`FOR UPDATE SKIP LOCKED`, retried with backoff, dead-lettered after the budget, and
+delivered by a worker process that shuts down gracefully. Scope and hard
 requirements live in [SPEC.md](SPEC.md); milestones and exit criteria in
 [ROADMAP.md](ROADMAP.md); working rules in [AGENTS.md](AGENTS.md).
 
@@ -92,8 +95,9 @@ SLOTWISE_BOOTSTRAP_OWNER_PASSWORD=... go run ./cmd/web
 
 A partial `SLOTWISE_BOOTSTRAP_*` group fails startup instead of quietly serving without a
 tenant, and the slug has to stay clear of `services` and `staff`, which the router uses.
-`SLOTWISE_COOKIE_SECURE=1` marks the session cookie `Secure`. Until M5 wires a real
-provider, outbound mail — reset links included — goes to the log.
+`SLOTWISE_COOKIE_SECURE=1` marks the session cookie `Secure`. Outbound mail still goes to
+the log: M5 puts it behind the job queue, and a real provider is a one-file sender swap
+when one is chosen.
 
 `SLOTWISE_CANCEL_SECRET` (at least 32 bytes) signs the public cancel links and is required:
 the routes it protects are unauthenticated, so the token is the only credential they take.
@@ -109,6 +113,60 @@ already made — cancelled or not — instead of booking again, and cancelling t
 Both public routes are rate limited in memory (10 creates per customer account and 60 per
 business, 600 searches per business, per 15 minutes); the buckets are a guardrail against a
 runaway client, not a denial-of-service defence.
+
+## Jobs and email
+
+Booking a slot queues its mail inside the booking's own transaction, so a booking that
+committed always has its confirmation job however the process dies afterwards: there is no
+window between the insert and the enqueue to crash in. That guarantee covers bookings
+written from M5 on; rows committed before 0006 — or by a web process that predates it
+during a deploy window — have no queue rows and get no mail, and nothing backfills them.
+The unique key (tenant, booking, kind) makes a second enqueue a no-op and keeps at most
+one job of each kind per booking.
+
+`cmd/worker` runs the queue as a separate process, so a stuck handler, a panic or a
+SIGKILL takes down a queue worker and not the HTTP server, and the queue scales on its own.
+It claims the next due job with `FOR UPDATE SKIP LOCKED`, leases it, runs the handler, and
+records the outcome:
+
+- **Lease.** A claim holds the job for two minutes — twice the handler timeout, so a
+  healthy handler always answers while its lease is valid — and names the process on the
+  row. A worker that dies mid-handler releases nothing: the lease expires and any other
+  worker reclaims the job. Delivery is at-least-once; the reclaim can duplicate a message
+  that went out just before the crash.
+- **Attempts and backoff.** `attempts` counts claims and is incremented by the claim
+  itself, so an attempt that died unreported is still counted. A failed attempt requeues
+  the job after 30s, 1m, 2m, 4m, 8m, 16m, 30m (doubling, capped at 30m); the eighth
+  failure dead-letters instead of waiting.
+- **Dead letter.** After eight attempts a failure marks the job `dead` with the last error
+  kept; nothing claims it again. A graceful shutdown releases the in-flight job
+  immediately and refunds its attempt, so a deploy does not spend the budget; a reclaim
+  that finds the budget spent dead-letters the job without running it.
+
+The v1 messages are the confirmation, sent as soon as the worker claims its job, and the
+24h reminder, due at `starts_at − 24h`. A booking made inside that window gets the
+confirmation only: it carries the cancel link, and a "reminder" seconds after the
+confirmation would only repeat it. A booking cancelled before its mail goes out is skipped
+at delivery. Both messages carry the signed cancel link the public cancel route accepts.
+
+The worker reads the tenant-scoped tables like any request does; the single cross-tenant
+operation it has is the claim itself, a narrowly granted `SECURITY DEFINER` function
+(`job_claim`) that returns only the five queue columns. Direct reads of `jobs` stay behind
+the tenant policy.
+
+```sh
+DATABASE_URL=... SLOTWISE_BASE_URL=https://slotwise.example \
+SLOTWISE_CANCEL_SECRET=... go run ./cmd/worker
+```
+
+Dead jobs are the operator's queue: `SELECT * FROM jobs WHERE status = 'dead'` lists them,
+and requeueing one is an `UPDATE` (an `INSERT` would be rejected by the unique key):
+
+```sql
+UPDATE jobs SET status = 'ready', attempts = 0, run_at = now(),
+                locked_by = NULL, locked_until = NULL
+ WHERE id = '…';
+```
 
 ## Guardrails
 

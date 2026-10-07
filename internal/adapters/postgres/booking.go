@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -62,7 +63,11 @@ func insertBooking(ctx context.Context, q *dbgen.Queries, tenantID uuid.UUID, in
 	})
 	switch {
 	case err == nil:
-		return toDomainBooking(row), nil
+		stored := toDomainBooking(row)
+		if err := enqueueJobs(ctx, q, tenantID, stored, in); err != nil {
+			return domain.Booking{}, err
+		}
+		return stored, nil
 	case errors.Is(err, pgx.ErrNoRows):
 		existing, readErr := bookingByKey(ctx, q, tenantID, in.IdempotencyKey)
 		if errors.Is(readErr, domain.ErrNotFound) {
@@ -161,6 +166,90 @@ func lockActiveStaffRow(ctx context.Context, q *dbgen.Queries, staffID uuid.UUID
 		return fmt.Errorf("locking staff %s: %w", staffID, err)
 	}
 	return nil
+}
+
+// enqueueJobs queues the mail a fresh booking owes, inside the booking's own
+// transaction: that is the whole guarantee. The insert and the enqueue commit
+// or roll back together, so a booking that committed always has its
+// confirmation job and a transaction that died built neither. The idempotent
+// replay path never reaches here, and the unique (tenant, booking, kind) key
+// backstops anything that does.
+func enqueueJobs(ctx context.Context, q *dbgen.Queries, tenantID uuid.UUID, booking domain.Booking, in app.BookingWrite) error {
+	if err := insertBookingJob(ctx, q, tenantID, booking.ID, domain.JobBookingConfirmation, in.EnqueuedAt); err != nil {
+		return err
+	}
+	if in.ReminderAt == nil {
+		return nil
+	}
+	return insertBookingJob(ctx, q, tenantID, booking.ID, domain.JobBookingReminder, *in.ReminderAt)
+}
+
+// insertBookingJob queues one job and refuses to continue when the unique key
+// already held it. On the fresh-insert path that is an invariant break — a
+// booking would commit without its mail — so it fails the whole transaction
+// rather than swallowing the conflict.
+func insertBookingJob(ctx context.Context, q *dbgen.Queries, tenantID, bookingID uuid.UUID, kind domain.JobKind, runAt time.Time) error {
+	affected, err := q.InsertBookingJob(ctx, dbgen.InsertBookingJobParams{
+		TenantID:  tenantID,
+		BookingID: bookingID,
+		Kind:      string(kind),
+		RunAt:     runAt,
+	})
+	if err != nil {
+		return fmt.Errorf("queuing %s job: %w", kind, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("queuing %s job for booking %s: already queued", kind, bookingID)
+	}
+	return nil
+}
+
+// BookingMessage reads the booking with its tenant, service and staff names in
+// one tenant-scoped query, which is everything a confirmation or reminder
+// renders.
+func (db *DB) BookingMessage(ctx context.Context, tenantID, bookingID uuid.UUID) (app.BookingMessage, error) {
+	var message app.BookingMessage
+	err := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := dbgen.New(tx).BookingMessage(ctx, bookingID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("booking %s: %w", bookingID, domain.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("reading booking message: %w", err)
+		}
+		message = toBookingMessage(row)
+		return nil
+	})
+	if err != nil {
+		return app.BookingMessage{}, err
+	}
+	return message, nil
+}
+
+// toBookingMessage maps one joined row.
+func toBookingMessage(row dbgen.BookingMessageRow) app.BookingMessage {
+	return app.BookingMessage{
+		Booking: domain.Booking{
+			ID:            row.ID,
+			TenantID:      row.TenantID,
+			StaffID:       row.StaffID,
+			ServiceID:     row.ServiceID,
+			CustomerName:  row.CustomerName,
+			CustomerEmail: row.CustomerEmail,
+			StartsAt:      row.StartsAt,
+			EndsAt:        row.EndsAt,
+			Status:        domain.BookingStatus(row.Status),
+			CreatedAt:     row.CreatedAt,
+		},
+		Tenant: domain.Tenant{
+			ID:       row.TenantID,
+			Slug:     row.Slug,
+			Name:     row.TenantName,
+			Timezone: row.Timezone,
+		},
+		ServiceName: row.ServiceName,
+		StaffName:   row.StaffName,
+	}
 }
 
 // toDomainBooking maps one stored row.

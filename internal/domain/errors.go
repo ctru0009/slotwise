@@ -23,3 +23,8 @@ var ErrTenantNotFound = errors.New("tenant not found")
 // ErrResetTokenInvalid reports a password reset token that is unknown, already
 // used, or expired.
 var ErrResetTokenInvalid = errors.New("reset token invalid")
+
+// ErrJobSkipped reports that a job handler deliberately delivered nothing: the
+// booking was cancelled, or a reminder's appointment had already started. The
+// worker completes the job and logs the reason instead of retrying it.
+var ErrJobSkipped = errors.New("job skipped")

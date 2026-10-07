@@ -24,7 +24,10 @@ const (
 )
 
 // BookingWrite is one booking to store. EndsAt is the occupied end: StartsAt
-// plus the service's duration and buffer.
+// plus the service's duration and buffer. EnqueuedAt is the injected clock's
+// now; the confirmation job is due then. ReminderAt is when the 24h reminder is
+// due, or nil when the booking was made inside the lead window and gets a
+// confirmation only. The store queues what it is told and decides nothing.
 type BookingWrite struct {
 	StaffID        uuid.UUID
 	ServiceID      uuid.UUID
@@ -33,6 +36,8 @@ type BookingWrite struct {
 	StartsAt       time.Time
 	EndsAt         time.Time
 	IdempotencyKey string
+	EnqueuedAt     time.Time
+	ReminderAt     *time.Time
 }
 
 // Bookings implements the public booking use cases. No method takes an actor:
@@ -93,6 +98,7 @@ func (b *Bookings) Create(ctx context.Context, tenantID uuid.UUID, in BookingInp
 		return b.resolveVeto(ctx, tenantID, in)
 	}
 
+	now := b.clock.Now()
 	booking, err := b.store.CreateBooking(ctx, tenantID, BookingWrite{
 		StaffID:        in.StaffID,
 		ServiceID:      in.ServiceID,
@@ -101,6 +107,8 @@ func (b *Bookings) Create(ctx context.Context, tenantID uuid.UUID, in BookingInp
 		StartsAt:       in.StartsAt,
 		EndsAt:         in.StartsAt.Add(snapshot.Service.Block()),
 		IdempotencyKey: in.IdempotencyKey,
+		EnqueuedAt:     now,
+		ReminderAt:     reminderRunAt(now, in.StartsAt),
 	})
 	if err != nil {
 		return domain.Booking{}, fmt.Errorf("creating booking: %w", err)

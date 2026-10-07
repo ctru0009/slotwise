@@ -245,6 +245,21 @@ func SeedBookingSpan(t *testing.T, owner *pgxpool.Pool, f Fixture, startsAt stri
 	return uuid.MustParse(id)
 }
 
+// SeedJob inserts one queue row for a booking, bypassing RLS as the owner.
+func SeedJob(t *testing.T, owner *pgxpool.Pool, tenantID, bookingID uuid.UUID, kind string, runAt time.Time) uuid.UUID {
+	t.Helper()
+	var id string
+	err := owner.QueryRow(t.Context(), `
+		INSERT INTO jobs (tenant_id, booking_id, kind, run_at)
+		VALUES ($1::uuid, $2::uuid, $3, $4::timestamptz)
+		RETURNING id::text`,
+		tenantID.String(), bookingID.String(), kind, runAt).Scan(&id)
+	if err != nil {
+		t.Fatalf("seeding %s job: %v", kind, err)
+	}
+	return uuid.MustParse(id)
+}
+
 // SeedWeeklyRule inserts one availability rule for f's staff member.
 func SeedWeeklyRule(t *testing.T, owner *pgxpool.Pool, f Fixture, weekday, startMinute, endMinute int) uuid.UUID {
 	t.Helper()

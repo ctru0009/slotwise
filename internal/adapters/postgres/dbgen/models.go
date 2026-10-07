@@ -35,6 +35,21 @@ type Booking struct {
 	CreatedAt      time.Time
 }
 
+type Job struct {
+	ID          uuid.UUID
+	TenantID    uuid.UUID
+	BookingID   uuid.UUID
+	Kind        string
+	Status      string
+	Attempts    int32
+	RunAt       time.Time
+	LockedBy    pgtype.Text
+	LockedUntil pgtype.Timestamptz
+	LastError   pgtype.Text
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type PasswordResetToken struct {
 	TokenHash []byte
 	TenantID  uuid.UUID

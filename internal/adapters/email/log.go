@@ -1,5 +1,6 @@
 // Package email holds the outbound message senders. Development logs instead
-// of delivering, which is what SPEC asks for until M5 wires a real provider.
+// of delivering, which is what SPEC asks for until a real provider is chosen;
+// the job queue in front of it does not change that.
 package email
 
 import (

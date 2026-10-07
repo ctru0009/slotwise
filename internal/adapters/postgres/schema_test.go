@@ -26,6 +26,7 @@ func TestSchemaInvariants(t *testing.T) {
 	assertPreTenantTablesAreUnreachable(t, pool)
 	assertResolverFunctionsAreNarrow(t, pool)
 	assertTenantResolverExposesOnlyPublicColumns(t, pool)
+	assertJobClaimExposesOnlyQueueColumns(t, pool)
 	assertRoleCannotBypassPolicies(t, pool)
 }
 
@@ -72,6 +73,7 @@ func TestMigrationsGrantTheAppRoleWhenItArrivesLate(t *testing.T) {
 		"password_reset_tokens": true,
 		"availability_rules":    true,
 		"time_off":              true,
+		"jobs":                  true,
 		"sessions":              false,
 		"goose_db_version":      false,
 	} {
@@ -187,17 +189,24 @@ func assertPreTenantTablesAreUnreachable(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-// resolverFunctions are the SECURITY DEFINER functions 0003 adds. They are the
-// only pre-tenant reads and writes, so each one must run as its definer, pin
-// search_path, be unreachable for PUBLIC and executable for the app role.
+// resolverFunctions are the SECURITY DEFINER functions the migrations add. They
+// are the only paths around the tenant policies — tenant_by_slug before a
+// tenant exists, the session functions for pre-tenant session state, job_claim
+// because the worker serves every tenant at once — so each one must run as its
+// definer, pin search_path, be unreachable for PUBLIC and executable for the
+// app role.
 var resolverFunctions = []string{
 	"tenant_by_slug",
 	"session_find",
 	"session_commit",
 	"session_delete",
 	"session_purge",
+	"job_claim",
 }
 
+// assertResolverFunctionsAreNarrow is a census, not an allow-list lookup: every
+// SECURITY DEFINER function in public must be named above, so a future definer
+// function cannot ship with a NULL ACL (PUBLIC holding EXECUTE) unnoticed.
 func assertResolverFunctionsAreNarrow(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 
@@ -214,13 +223,17 @@ func assertResolverFunctionsAreNarrow(t *testing.T, pool *pgxpool.Pool) {
 		                   FROM pg_catalog.aclexplode(p.proacl) a), '{}'::text[])
 		  FROM pg_catalog.pg_proc p
 		  JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-		 WHERE n.nspname = 'public' AND p.proname::text = ANY($1::text[])
-		 ORDER BY p.proname`, resolverFunctions)
+		 WHERE n.nspname = 'public' AND p.prosecdef
+		 ORDER BY p.proname`)
 	if err != nil {
 		t.Fatalf("listing resolver functions: %v", err)
 	}
 	defer rows.Close()
 
+	expected := make(map[string]bool, len(resolverFunctions))
+	for _, name := range resolverFunctions {
+		expected[name] = true
+	}
 	seen := make(map[string]bool, len(resolverFunctions))
 	for rows.Next() {
 		var (
@@ -234,6 +247,10 @@ func assertResolverFunctionsAreNarrow(t *testing.T, pool *pgxpool.Pool) {
 		if err := rows.Scan(&name, &owner, &secdef, &proconfig, &aclNull, &acl); err != nil {
 			t.Fatalf("scanning resolver function: %v", err)
 		}
+		if !expected[name] {
+			t.Errorf("%s is SECURITY DEFINER but not in resolverFunctions; add it after reviewing its ACL and search_path", name)
+			continue
+		}
 		seen[name] = true
 		assertResolverFunction(t, name, owner, secdef, proconfig, aclNull, acl)
 	}
@@ -244,6 +261,24 @@ func assertResolverFunctionsAreNarrow(t *testing.T, pool *pgxpool.Pool) {
 		if !seen[name] {
 			t.Errorf("resolver function %s is missing", name)
 		}
+	}
+}
+
+// assertJobClaimExposesOnlyQueueColumns pins the claim's return type: the
+// worker receives exactly the queue columns it serves, and a later migration
+// cannot widen them into something a cross-tenant function should not return.
+func assertJobClaimExposesOnlyQueueColumns(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+
+	const want = "TABLE(id uuid, tenant_id uuid, booking_id uuid, kind text, attempts integer)"
+	var got string
+	err := pool.QueryRow(t.Context(),
+		"SELECT pg_catalog.pg_get_function_result('public.job_claim(text, timestamptz, integer)'::pg_catalog.regprocedure)").Scan(&got)
+	if err != nil {
+		t.Fatalf("reading job_claim's result type: %v", err)
+	}
+	if got != want {
+		t.Errorf("job_claim returns %q, want %q", got, want)
 	}
 }
 
