@@ -2,8 +2,8 @@
 
 Exit gate for every milestone: `make check` green in CI, plus the listed test.
 
-Progress: M0–M4 done. M1 shipped without sqlc, which landed in M2 with the first
-store methods. M5 (jobs + reminders) next.
+Progress: M0–M5 done. M1 shipped without sqlc, which landed in M2 with the first
+store methods. M6 (UI) next.
 
 | # | Milestone | Exit criteria | Size |
 |---|---|---|---|
@@ -18,6 +18,18 @@ store methods. M5 (jobs + reminders) next.
 
 ## Notes
 - M3 and M4 carry the real risk (time zones, concurrency), so the tests are the deliverable.
+- M5: the confirmation and reminder jobs are inserted inside the booking's transaction, so
+  a committed booking always has its job; never move the enqueue out of that transaction.
+  Scheduling fields (`run_at`, `locked_until`) are written from the injected clock and
+  compared to a claim-time parameter, never to the database's `now()`, which stays the
+  source for audit columns only. The claim is `job_claim`, a `SECURITY DEFINER` function —
+  the one cross-tenant path the app role has, bounded to the queue columns; direct reads
+  of `jobs` stay tenant-scoped. A lease lasts two minutes, `attempts` counts claims,
+  failures back off 30s → 30m doubling, and a job dead-letters after eight attempts; a
+  graceful shutdown releases in-flight work and refunds its attempt. A booking made inside
+  the 24h window gets no reminder job, only the confirmation, because both messages carry
+  the same cancel link. Delivery is at-least-once. The worker is `cmd/worker`, a separate
+  process; M7's image runs both binaries.
 - M4 must store `bookings.ends_at` as the occupied end with the service buffer included
   (`starts_at + duration + buffer`). The exclusion constraint then enforces the buffer, and
   the M3 slot engine treats stored busy intervals as blocked spans without padding them.
