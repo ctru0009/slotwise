@@ -103,13 +103,46 @@ type BookingStore interface {
 	CreateBooking(ctx context.Context, tenantID uuid.UUID, in BookingWrite) (domain.Booking, error)
 	// BookingByID returns the booking with this id, or domain.ErrNotFound.
 	BookingByID(ctx context.Context, tenantID, id uuid.UUID) (domain.Booking, error)
+	// BookingMessage reads everything one confirmation or reminder email
+	// renders: the booking, its tenant's slug, name and timezone, the service
+	// name and the staff name. It is tenant-scoped, so another tenant's booking
+	// reads as domain.ErrNotFound.
+	BookingMessage(ctx context.Context, tenantID, bookingID uuid.UUID) (BookingMessage, error)
 	// CancelBooking marks the booking cancelled. Cancelling a cancelled
 	// booking succeeds; an unknown or invisible id reports domain.ErrNotFound.
 	CancelBooking(ctx context.Context, tenantID, id uuid.UUID) error
 }
 
-// Sender delivers outbound messages. Development wires the logging
-// implementation; M5 adds the real one for confirmations and reminders.
+// JobStore is the queue as the worker drives it: claim one due job, then apply
+// the transition its outcome asks for. The booking path enqueues inside its own
+// transaction and never claims.
+//
+// Every transition is guarded by the lease the caller was given. A false bool
+// means the lease moved on, either because another worker reclaimed the job or
+// because this worker's lease expired while it was running; the caller logs it
+// and moves on rather than treating it as an error.
+type JobStore interface {
+	// ClaimJob leases the next due job to workerID until claimTime plus
+	// leaseSeconds, and reports it with Attempts already incremented.
+	// domain.ErrNotFound means nothing is due.
+	ClaimJob(ctx context.Context, workerID string, claimTime time.Time, leaseSeconds int) (domain.Job, error)
+	// CompleteJob marks the job done.
+	CompleteJob(ctx context.Context, workerID string, job domain.Job) (bool, error)
+	// RetryJob returns the job to the queue with runAt as its new due time and
+	// reason as its last error.
+	RetryJob(ctx context.Context, workerID string, job domain.Job, runAt time.Time, reason string) (bool, error)
+	// DeadLetterJob marks the job dead and keeps reason as its last error. Dead
+	// is terminal: nothing claims it again, and requeueing one is an operator
+	// action.
+	DeadLetterJob(ctx context.Context, workerID string, job domain.Job, reason string) (bool, error)
+	// ReleaseJob returns an interrupted job to the queue with its run_at
+	// unchanged and the claim's attempt refunded, which is what a graceful
+	// shutdown does.
+	ReleaseJob(ctx context.Context, workerID string, job domain.Job) (bool, error)
+}
+
+// Sender delivers outbound messages. Development and this milestone wire the
+// logging implementation; a real provider is a later one-file swap.
 type Sender interface {
 	Send(ctx context.Context, msg domain.Message) error
 }

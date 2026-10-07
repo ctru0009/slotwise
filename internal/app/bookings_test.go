@@ -29,6 +29,12 @@ type fakeBookingStore struct {
 	readErr   error
 	cancelErr error
 
+	// messages is what BookingMessage serves, keyed by booking id; messageErr
+	// fails the read.
+	messages     map[uuid.UUID]BookingMessage
+	messageReads int
+	messageErr   error
+
 	// lookupErrs schedules the outcome of the next key lookups: an entry
 	// replaces what that call returns, so a test can model a row landing
 	// between the replay check and the snapshot (domain.ErrNotFound) or a read
@@ -102,6 +108,18 @@ func (f *fakeBookingStore) CancelBooking(_ context.Context, tenantID, id uuid.UU
 	booking.Status = domain.BookingCancelled
 	f.store(booking, "")
 	return nil
+}
+
+func (f *fakeBookingStore) BookingMessage(_ context.Context, tenantID, bookingID uuid.UUID) (BookingMessage, error) {
+	f.messageReads++
+	if f.messageErr != nil {
+		return BookingMessage{}, f.messageErr
+	}
+	source, ok := f.messages[bookingID]
+	if !ok || source.Booking.TenantID != tenantID {
+		return BookingMessage{}, domain.ErrNotFound
+	}
+	return source, nil
 }
 
 // store records one booking under its id and, when key is not empty, its
