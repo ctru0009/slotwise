@@ -291,7 +291,10 @@ func TestClaimJobUsesThePassedClaimTime(t *testing.T) {
 	db := pgtest.AppDB(t, appDSN)
 	booking := pgtest.SeedBooking(t, owner, fixture, "2026-11-02T09:00:00Z")
 
-	runAt := time.Now().Add(72 * time.Hour).UTC()
+	// Postgres stores timestamptz at microsecond precision, so the instants the
+	// assertions compare exactly have to be representable there; the runner's
+	// clock has finer resolution than the local one.
+	runAt := time.Now().Add(72 * time.Hour).UTC().Truncate(time.Microsecond)
 	job := pgtest.SeedJob(t, owner, fixture.Tenant, booking, "booking_confirmation", runAt)
 
 	if _, err := db.ClaimJob(ctx, "clock-worker", time.Now().Add(-time.Minute), 60); !errors.Is(err, domain.ErrNotFound) {
