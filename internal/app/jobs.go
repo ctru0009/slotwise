@@ -31,7 +31,7 @@ type BookingMessage struct {
 // domain.ErrJobSkipped when there is nothing useful left to say.
 type Jobs struct {
 	bookings BookingStore
-	signer   *CancelSigner
+	signer   *Signer
 	sender   Sender
 	baseURL  string
 	clock    clock.Clock
@@ -40,7 +40,7 @@ type Jobs struct {
 // NewJobs wires the delivery use case to its store, the signer whose links the
 // mail carries, the sender that delivers it, the public base URL those links
 // hang off, and the clock the staleness check reads.
-func NewJobs(bookings BookingStore, signer *CancelSigner, sender Sender, baseURL string, clk clock.Clock) *Jobs {
+func NewJobs(bookings BookingStore, signer *Signer, sender Sender, baseURL string, clk clock.Clock) *Jobs {
 	return &Jobs{bookings: bookings, signer: signer, sender: sender, baseURL: baseURL, clock: clk}
 }
 
@@ -98,7 +98,7 @@ func (j *Jobs) deliverable(job domain.Job, source BookingMessage) error {
 // otherwise have no way out.
 func (j *Jobs) message(job domain.Job, source BookingMessage, loc *time.Location) domain.Message {
 	when := formatWhen(source.Booking, loc)
-	link := cancelLink(j.baseURL, source.Tenant.Slug, source.Booking.ID, j.signer.Token(source.Booking.ID))
+	link := cancelLink(j.baseURL, source.Tenant.Slug, source.Booking.ID, j.signer.Token(PurposeCancel, source.Booking.ID))
 	switch job.Kind {
 	case domain.JobBookingReminder:
 		return domain.Message{

@@ -172,7 +172,7 @@ func TestBookingInsideTheWindowGetsNoReminder(t *testing.T) {
 func (h *harness) startWorker(t *testing.T) (stop func()) {
 	t.Helper()
 	db := pgtest.AppDB(t, h.appDSN)
-	signer, err := app.NewCancelSigner(testCancelKey)
+	signer, err := app.NewSigner(testCancelKey)
 	if err != nil {
 		t.Fatalf("building the signer: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -110,6 +111,25 @@ func (f *fakeBookingStore) CancelBooking(_ context.Context, tenantID, id uuid.UU
 	return nil
 }
 
+func (f *fakeBookingStore) ListBookingsInRange(_ context.Context, tenantID uuid.UUID, from, to time.Time) ([]BookingInRange, error) {
+	inRange := []BookingInRange{}
+	for _, booking := range f.byID {
+		if booking.TenantID != tenantID || !booking.StartsAt.Before(to) || !booking.EndsAt.After(from) {
+			continue
+		}
+		inRange = append(inRange, BookingInRange{
+			ID:        booking.ID,
+			StaffID:   booking.StaffID,
+			ServiceID: booking.ServiceID,
+			StartsAt:  booking.StartsAt,
+			EndsAt:    booking.EndsAt,
+			Status:    booking.Status,
+		})
+	}
+	slices.SortFunc(inRange, func(a, b BookingInRange) int { return a.StartsAt.Compare(b.StartsAt) })
+	return inRange, f.readErr
+}
+
 func (f *fakeBookingStore) BookingMessage(_ context.Context, tenantID, bookingID uuid.UUID) (BookingMessage, error) {
 	f.messageReads++
 	if f.messageErr != nil {
@@ -148,13 +168,13 @@ type bookingFixture struct {
 	avail    *fakeAvailabilityStore
 	tenants  *fakeTenantStore
 	clock    *clock.Fake
-	signer   *CancelSigner
+	signer   *Signer
 	tenantID uuid.UUID
 	staffID  uuid.UUID
 	service  domain.Service
 }
 
-// bookingSecret is long enough for NewCancelSigner; the signer tests pin the
+// bookingSecret is long enough for NewSigner; the signer tests pin the
 // boundary itself.
 const bookingSecret = "test-cancel-secret-that-is-long-enough"
 
@@ -181,7 +201,7 @@ func newBookingFixture(t *testing.T) bookingFixture {
 		"acme": {ID: tenantID, Slug: "acme", Name: "Acme", Timezone: "Europe/Berlin"},
 	}}
 	fakeClock := clock.NewFake(time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC))
-	signer, err := NewCancelSigner(bookingSecret)
+	signer, err := NewSigner(bookingSecret)
 	if err != nil {
 		t.Fatalf("building the signer: %v", err)
 	}

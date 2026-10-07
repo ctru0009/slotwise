@@ -40,3 +40,16 @@ UPDATE bookings SET status = 'cancelled' WHERE id = @id;
 -- would otherwise be stored for somebody who no longer takes appointments.
 -- name: LockActiveStaff :one
 SELECT 1 AS visible FROM staff WHERE id = @id AND active FOR UPDATE;
+
+-- The calendar and the booking list are one query per rendered range: the
+-- interval test is half-open and uses the stored occupied end, so a booking
+-- that starts before the range and still occupies it is included. Both names
+-- come from the join, so a fifty-booking week costs one round trip, not fifty.
+-- name: ListBookingsInRange :many
+SELECT b.id, b.staff_id, b.service_id, b.customer_name, b.starts_at, b.ends_at, b.status,
+       s.name AS service_name, st.name AS staff_name
+  FROM bookings b
+  JOIN services s ON s.tenant_id = b.tenant_id AND s.id = b.service_id
+  JOIN staff st ON st.tenant_id = b.tenant_id AND st.id = b.staff_id
+ WHERE b.starts_at < @range_end AND b.ends_at > @range_start
+ ORDER BY b.starts_at, b.id;

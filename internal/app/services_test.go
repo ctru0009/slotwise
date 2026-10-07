@@ -18,6 +18,7 @@ type fakeServiceStore struct {
 	writeErr error
 
 	tenantID uuid.UUID
+	actorID  uuid.UUID
 	created  ServiceInput
 	updated  ServiceInput
 	activeID uuid.UUID
@@ -33,23 +34,26 @@ func (f *fakeServiceStore) ListServices(_ context.Context, tenantID uuid.UUID) (
 	return f.services, nil
 }
 
-func (f *fakeServiceStore) CreateService(_ context.Context, tenantID uuid.UUID, in ServiceInput) error {
+func (f *fakeServiceStore) CreateService(_ context.Context, tenantID, actor uuid.UUID, in ServiceInput) error {
 	f.tenantID = tenantID
+	f.actorID = actor
 	f.created = in
 	f.writes++
 	return f.writeErr
 }
 
-func (f *fakeServiceStore) UpdateService(_ context.Context, tenantID, id uuid.UUID, in ServiceInput) error {
+func (f *fakeServiceStore) UpdateService(_ context.Context, tenantID, actor, id uuid.UUID, in ServiceInput) error {
 	f.tenantID = tenantID
+	f.actorID = actor
 	f.updated = in
 	f.activeID = id
 	f.writes++
 	return f.writeErr
 }
 
-func (f *fakeServiceStore) SetServiceActive(_ context.Context, tenantID, id uuid.UUID, active bool) error {
+func (f *fakeServiceStore) SetServiceActive(_ context.Context, tenantID, actor, id uuid.UUID, active bool) error {
 	f.tenantID = tenantID
+	f.actorID = actor
 	f.activeID = id
 	f.active = active
 	f.writes++
@@ -122,10 +126,15 @@ func TestServicesOwnerWriteNormalisesInput(t *testing.T) {
 	t.Parallel()
 	tenantID := uuid.New()
 	store := &fakeServiceStore{}
+	actor := ownerActor(tenantID)
 	in := ServiceInput{Name: "  Cut and blow dry  ", DurationMinutes: 30, BufferMinutes: 10, PriceCents: 4_500}
 
-	if err := NewServices(store).Create(t.Context(), ownerActor(tenantID), in); err != nil {
+	if err := NewServices(store).Create(t.Context(), actor, in); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+	// The store records who made the change, so the audit row can name them.
+	if store.actorID != actor.ID {
+		t.Errorf("stored actor = %v, want the acting login %v", store.actorID, actor.ID)
 	}
 	want := ServiceInput{Name: "Cut and blow dry", DurationMinutes: 30, BufferMinutes: 10, PriceCents: 4_500}
 	if store.created != want {
@@ -160,8 +169,12 @@ func TestServicesSetActiveReachesStore(t *testing.T) {
 	tenantID := uuid.New()
 	id := uuid.New()
 	store := &fakeServiceStore{}
-	if err := NewServices(store).SetActive(t.Context(), ownerActor(tenantID), id, false); err != nil {
+	actor := ownerActor(tenantID)
+	if err := NewServices(store).SetActive(t.Context(), actor, id, false); err != nil {
 		t.Fatalf("SetActive: %v", err)
+	}
+	if store.actorID != actor.ID {
+		t.Errorf("stored actor = %v, want the acting login %v", store.actorID, actor.ID)
 	}
 	if store.activeID != id || store.active || store.tenantID != tenantID {
 		t.Errorf("SetServiceActive(%v, %v, %v), want (%v, %v, %v)",

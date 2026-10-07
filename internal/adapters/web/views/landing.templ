@@ -1,0 +1,31 @@
+package views
+
+// Landing is the public page of one business: what it offers and when it can be
+// booked. It shows the tenant's display name and the active catalogue, and
+// nothing else about the business.
+templ Landing(page LandingPage) {
+	@Layout() {
+		<h1>{ page.Tenant.Name }</h1>
+		<p>Choose a service to see the times it can be booked at.</p>
+		if len(page.Services) > 0 {
+			<table>
+				<thead>
+					<tr><th>Service</th><th>Duration</th><th>Buffer</th><th>Price</th><th>Times</th></tr>
+				</thead>
+				<tbody>
+					for _, service := range page.Services {
+						<tr>
+							<td>{ service.Name }</td>
+							<td>{ service.DurationMinutes } min</td>
+							<td>{ service.BufferMinutes } min</td>
+							<td>{ money(service.PriceCents) }</td>
+							<td><a href={ slotSearchPath(page.Tenant.Slug, service.ID.String(), page.Today) }>See times</a></td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		} else {
+			<p class="muted">This business has no services to book right now.</p>
+		}
+	}
+}

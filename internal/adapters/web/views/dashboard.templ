@@ -1,0 +1,318 @@
+package views
+
+import (
+	"time"
+
+	"github.com/ctru0009/slotwise/internal/app"
+	"github.com/ctru0009/slotwise/internal/domain"
+)
+
+// Dashboard is the signed-in overview: the calendar window, the booking list,
+// the queue's dead letters, the audit trail, and the forms that change the
+// catalogue.
+templ Dashboard(page DashboardPage) {
+	@Layout() {
+		<h1>{ page.Overview.Tenant.Name }</h1>
+		<p class="muted">
+			Signed in as { page.User.Email } ({ page.User.Role })
+		</p>
+		<form method="post" action="/app/logout">
+			<p><button type="submit">Sign out</button></p>
+		</form>
+		if page.Error != "" {
+			<p class="error">{ page.Error }</p>
+		}
+		@Calendar(page.Overview)
+		@DeadJobs(page.Overview)
+		@AuditTrail(page.Overview)
+		<h2>Services</h2>
+		if page.User.IsOwner() {
+			@serviceForm()
+		}
+		if len(page.Overview.Services) > 0 {
+			<table>
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Duration</th>
+						<th>Buffer</th>
+						<th>Price</th>
+						<th>Status</th>
+						if page.User.IsOwner() {
+							<th>Change</th>
+						}
+					</tr>
+				</thead>
+				<tbody>
+					for _, service := range page.Overview.Services {
+						<tr>
+							<td>{ service.Name }</td>
+							<td>{ service.DurationMinutes } min</td>
+							<td>{ service.BufferMinutes } min</td>
+							<td>{ money(service.PriceCents) }</td>
+							<td>{ activeLabel(service.Active) }</td>
+							if page.User.IsOwner() {
+								<td>
+									@serviceRowForm(service)
+									@activeForm("/app/services/"+service.ID.String()+"/active", service.Active)
+								</td>
+							}
+						</tr>
+					}
+				</tbody>
+			</table>
+		} else {
+			<p class="muted">No services yet.</p>
+		}
+		<h2>Staff</h2>
+		if page.User.IsOwner() {
+			@staffForm()
+		}
+		if len(page.Overview.Staff) > 0 {
+			<table>
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Email</th>
+						<th>Status</th>
+						if page.User.IsOwner() {
+							<th>Change</th>
+						}
+					</tr>
+				</thead>
+				<tbody>
+					for _, member := range page.Overview.Staff {
+						<tr>
+							<td>{ member.Name }</td>
+							<td>{ member.Email }</td>
+							<td>{ activeLabel(member.Active) }</td>
+							if page.User.IsOwner() {
+								<td>
+									@staffRowForm(member)
+									@activeForm("/app/staff/"+member.ID.String()+"/active", member.Active)
+								</td>
+							}
+						</tr>
+					}
+				</tbody>
+			</table>
+		} else {
+			<p class="muted">No staff yet.</p>
+		}
+	}
+}
+
+// Calendar is the day or week grid plus the booking list for the same window.
+// htmx replaces this whole element when the toolbar changes the window, so the
+// grid and the list can never disagree about which range they show.
+templ Calendar(overview app.Overview) {
+	<div id="calendar">
+		<h2>{ modeLabel(overview.Window.Mode) } view</h2>
+		<div class="toolbar">
+			<a href={ dashboardURL(overview.Window.Mode, overview.Window.Anchor().AddDays(-stepDays(overview.Window))) }
+				hx-get={ calendarFragmentURL(overview.Window.Mode, overview.Window.Anchor().AddDays(-stepDays(overview.Window))) }
+				hx-target="#calendar" hx-swap="outerHTML"
+				hx-push-url={ dashboardURL(overview.Window.Mode, overview.Window.Anchor().AddDays(-stepDays(overview.Window))) }>Previous</a>
+			<a href={ dashboardURL(overview.Window.Mode, overview.Today()) }
+				hx-get={ calendarFragmentURL(overview.Window.Mode, overview.Today()) }
+				hx-target="#calendar" hx-swap="outerHTML"
+				hx-push-url={ dashboardURL(overview.Window.Mode, overview.Today()) }>Today</a>
+			<a href={ dashboardURL(overview.Window.Mode, overview.Window.Anchor().AddDays(stepDays(overview.Window))) }
+				hx-get={ calendarFragmentURL(overview.Window.Mode, overview.Window.Anchor().AddDays(stepDays(overview.Window))) }
+				hx-target="#calendar" hx-swap="outerHTML"
+				hx-push-url={ dashboardURL(overview.Window.Mode, overview.Window.Anchor().AddDays(stepDays(overview.Window))) }>Next</a>
+			if overview.Window.Mode == app.CalendarWeek {
+				<a href={ dashboardURL(app.CalendarDay, overview.Window.Anchor()) }
+					hx-get={ calendarFragmentURL(app.CalendarDay, overview.Window.Anchor()) }
+					hx-target="#calendar" hx-swap="outerHTML"
+					hx-push-url={ dashboardURL(app.CalendarDay, overview.Window.Anchor()) }>Day</a>
+			} else {
+				<a href={ dashboardURL(app.CalendarWeek, overview.Window.Anchor()) }
+					hx-get={ calendarFragmentURL(app.CalendarWeek, overview.Window.Anchor()) }
+					hx-target="#calendar" hx-swap="outerHTML"
+					hx-push-url={ dashboardURL(app.CalendarWeek, overview.Window.Anchor()) }>Week</a>
+			}
+		</div>
+		if len(overview.Staff) == 0 {
+			<p class="muted">No staff yet, so there is nothing to show on the calendar.</p>
+		} else {
+			<table>
+				<thead>
+					<tr>
+						<th>Staff</th>
+						for _, day := range overview.Window.Days {
+							<th>{ day.String() }</th>
+						}
+					</tr>
+				</thead>
+				<tbody>
+					for _, member := range overview.Staff {
+						<tr>
+							<th>{ member.Name }</th>
+							for _, day := range overview.Window.Days {
+								<td class="day">
+									for _, booking := range overview.BookingsFor(member.ID, day) {
+										@calendarBooking(booking, overview.Location)
+									}
+								</td>
+							}
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+		<h3>Bookings</h3>
+		if len(overview.Bookings) > 0 {
+			<table>
+				<thead>
+					<tr><th>Starts</th><th>Ends</th><th>Customer</th><th>Service</th><th>Staff</th><th>Status</th></tr>
+				</thead>
+				<tbody>
+					for _, booking := range overview.Bookings {
+						<tr>
+							<td>{ localTime(booking.StartsAt, overview.Location) }</td>
+							<td>{ localTime(booking.EndsAt, overview.Location) }</td>
+							<td>{ booking.CustomerName }</td>
+							<td>{ booking.ServiceName }</td>
+							<td>{ booking.StaffName }</td>
+							<td>{ string(booking.Status) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		} else {
+			<p class="muted">No bookings in this window.</p>
+		}
+	</div>
+}
+
+// calendarBooking is one appointment inside a calendar cell. It is not a link:
+// the page that shows a booking is reachable only with the token the customer's
+// email carries, and the dashboard never mints one.
+templ calendarBooking(booking app.BookingInRange, loc *time.Location) {
+	<div class={ "booking", bookingClass(booking.Status) }>
+		<span class="muted">{ localClock(booking.StartsAt, loc) }</span>
+		{ booking.CustomerName }
+		<span class="muted">{ booking.ServiceName }</span>
+	</div>
+}
+
+// DeadJobs lists the queue's dead letters for the tenant. It is a warning
+// light, not a control: requeueing a dead job is an operator action, so the
+// page only shows what gave up and why.
+templ DeadJobs(overview app.Overview) {
+	<h2>Failed deliveries</h2>
+	if len(overview.DeadJobs) == 0 {
+		<p class="muted">No dead-lettered jobs.</p>
+	} else {
+		<table>
+			<thead>
+				<tr><th>Job</th><th>Attempts</th><th>Last error</th><th>Gave up</th></tr>
+			</thead>
+			<tbody>
+				for _, job := range overview.DeadJobs {
+					<tr>
+						<td>{ string(job.Kind) }</td>
+						<td>{ job.Attempts }</td>
+						<td>{ job.LastError }</td>
+						<td>{ localTime(job.DiedAt, overview.Location) }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	}
+}
+
+// AuditTrail lists the tenant's newest recorded changes. A row names the change,
+// the login that made it, and the row it touched; a change made from the public
+// booking flow has no login to name, so it reads as the customer.
+templ AuditTrail(overview app.Overview) {
+	<h2>Audit log</h2>
+	if len(overview.Audit) == 0 {
+		<p class="muted">Nothing recorded yet.</p>
+	} else {
+		<table>
+			<thead>
+				<tr><th>When</th><th>Who</th><th>Change</th><th>Subject</th></tr>
+			</thead>
+			<tbody>
+				for _, entry := range overview.Audit {
+					<tr>
+						<td>{ localTime(entry.CreatedAt, overview.Location) }</td>
+						<td>{ actorLabel(entry) }</td>
+						<td>{ string(entry.Action) }</td>
+						<td>{ auditSubject(entry, overview.Location) }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	}
+}
+
+templ serviceForm() {
+	<form method="post" action="/app/services">
+		<p>
+			<label for="new-service-name">Name</label>
+			<input id="new-service-name" name="name" type="text" required/>
+		</p>
+		<p>
+			<label for="new-service-duration">Duration (minutes)</label>
+			<input id="new-service-duration" name="duration_minutes" type="number" min="1" max="1440" required/>
+		</p>
+		<p>
+			<label for="new-service-buffer">Buffer (minutes)</label>
+			<input id="new-service-buffer" name="buffer_minutes" type="number" min="0" max="240" value="0" required/>
+		</p>
+		<p>
+			<label for="new-service-price">Price (cents)</label>
+			<input id="new-service-price" name="price_cents" type="number" min="0" value="0" required/>
+		</p>
+		<p><button type="submit">Add service</button></p>
+	</form>
+}
+
+templ serviceRowForm(service domain.Service) {
+	<form method="post" action={ "/app/services/" + service.ID.String() }>
+		<input name="name" type="text" value={ service.Name } aria-label="Name" required/>
+		<input name="duration_minutes" type="number" min="1" max="1440" value={ service.DurationMinutes } aria-label="Duration (minutes)" required/>
+		<input name="buffer_minutes" type="number" min="0" max="240" value={ service.BufferMinutes } aria-label="Buffer (minutes)" required/>
+		<input name="price_cents" type="number" min="0" value={ service.PriceCents } aria-label="Price (cents)" required/>
+		<button type="submit">Save</button>
+	</form>
+}
+
+templ staffForm() {
+	<form method="post" action="/app/staff">
+		<p>
+			<label for="new-staff-name">Name</label>
+			<input id="new-staff-name" name="name" type="text" required/>
+		</p>
+		<p>
+			<label for="new-staff-email">Email</label>
+			<input id="new-staff-email" name="email" type="email" required/>
+		</p>
+		<p><button type="submit">Add staff member</button></p>
+	</form>
+}
+
+templ staffRowForm(member domain.Staff) {
+	<form method="post" action={ "/app/staff/" + member.ID.String() }>
+		<input name="name" type="text" value={ member.Name } aria-label="Name" required/>
+		<input name="email" type="email" value={ member.Email } aria-label="Email" required/>
+		<button type="submit">Save</button>
+	</form>
+}
+
+// activeForm is the activate or deactivate button for one row. The button says
+// what the click does, and the hidden field carries the state to write.
+templ activeForm(action string, active bool) {
+	<form method="post" action={ action }>
+		if active {
+			<input type="hidden" name="active" value="false"/>
+			<button type="submit">Deactivate</button>
+		} else {
+			<input type="hidden" name="active" value="true"/>
+			<button type="submit">Activate</button>
+		}
+	</form>
+}

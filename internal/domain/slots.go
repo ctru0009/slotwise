@@ -45,9 +45,21 @@ func (d LocalDate) Next() LocalDate {
 	return LocalDate{Year: t.Year(), Month: t.Month(), Day: t.Day()}
 }
 
+// AddDays returns the calendar date n days after d, or n days before it when n
+// is negative.
+func (d LocalDate) AddDays(n int) LocalDate {
+	t := d.atUTC().AddDate(0, 0, n)
+	return LocalDate{Year: t.Year(), Month: t.Month(), Day: t.Day()}
+}
+
 // After reports whether d is later than o.
 func (d LocalDate) After(o LocalDate) bool {
 	return d.compare(o) > 0
+}
+
+// Equal reports whether d and o are the same calendar date.
+func (d LocalDate) Equal(o LocalDate) bool {
+	return d.compare(o) == 0
 }
 
 // Weekday returns the day of week d falls on. It is a calendar fact, so no
@@ -127,10 +139,12 @@ type SlotSnapshot struct {
 	Staff   []StaffSchedule
 }
 
-// Slot is one bookable start for one staff member.
+// Slot is one bookable start for one staff member, with the name the pages
+// show: a customer cannot read a staff id.
 type Slot struct {
-	StaffID uuid.UUID
-	Start   time.Time
+	StaffID   uuid.UUID
+	StaffName string
+	Start     time.Time
 }
 
 // SlotQuery is the engine input for one staff member.

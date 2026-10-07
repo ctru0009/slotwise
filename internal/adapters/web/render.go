@@ -1,9 +1,14 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+
+	"github.com/a-h/templ"
+
+	"github.com/ctru0009/slotwise/internal/adapters/web/views"
 )
 
 // maxFormBytes caps the size of a parsed request body.
@@ -20,13 +25,21 @@ func parseForm(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// fail renders the error page with the given HTTP status. Rendering failures
-// are logged rather than surfaced, since the response has already started.
-func (v *Views) fail(w http.ResponseWriter, r *http.Request, status int, message string) {
+// renderPage writes one component to the response. A render failure can only be
+// logged: the response has already started by then.
+func renderPage(ctx context.Context, w http.ResponseWriter, component templ.Component) {
+	if err := component.Render(ctx, w); err != nil {
+		slog.ErrorContext(ctx, "rendering page", "err", err)
+	}
+}
+
+// fail renders the error page with the given HTTP status.
+func fail(w http.ResponseWriter, r *http.Request, status int, message string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	page := ErrorPage{Status: status, Title: http.StatusText(status), Message: message}
-	if err := v.Render(w, PageError, page); err != nil {
-		slog.ErrorContext(r.Context(), "rendering error page", "path", r.URL.Path, "status", status, "err", err)
-	}
+	renderPage(r.Context(), w, views.Error(views.ErrorPage{
+		Status:  status,
+		Title:   http.StatusText(status),
+		Message: message,
+	}))
 }

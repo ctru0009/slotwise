@@ -64,7 +64,7 @@ func (a *Availability) Search(ctx context.Context, tenantID, serviceID uuid.UUID
 	for _, schedule := range snapshot.Staff {
 		starts := domain.SlotTimes(slotQuery(loc, snapshot.Service, schedule, from, to, notBefore))
 		for _, start := range starts {
-			slots = append(slots, domain.Slot{StaffID: schedule.Staff.ID, Start: start})
+			slots = append(slots, domain.Slot{StaffID: schedule.Staff.ID, StaffName: schedule.Staff.Name, Start: start})
 		}
 	}
 	slices.SortFunc(slots, compareSlots)

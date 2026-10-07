@@ -9,49 +9,61 @@ import (
 	"github.com/google/uuid"
 )
 
-// cancelTokenPrefix separates the cancel MAC from any other use of the same
-// secret, so a token minted here cannot be replayed as something else.
-const cancelTokenPrefix = "booking-cancel:"
+// minSigningSecretBytes is the shortest signing secret NewSigner accepts. A
+// short secret is a guessable one, and the tokens it signs are the only
+// credential the public booking routes accept.
+const minSigningSecretBytes = 32
 
-// minCancelSecretBytes is the shortest signing secret NewCancelSigner accepts.
-// A short secret is a guessable one, and the tokens it signs are the only
-// credential the public cancel route accepts.
-const minCancelSecretBytes = 32
+// TokenPurpose is the job a signed link does. Each purpose gets its own MAC
+// prefix over the same secret, so a token minted for one job cannot be replayed
+// as another: a cancel link cannot download a calendar file, and a calendar
+// link cannot cancel a booking.
+type TokenPurpose string
 
-// CancelSigner mints and verifies the signed link that authorises one booking's
-// cancellation. The token is stateless — the booking id is the message — so
-// nothing has to be stored to check one.
-type CancelSigner struct {
+// The links one booking's secret signs.
+const (
+	// PurposeCancel authorises the public cancel route.
+	PurposeCancel TokenPurpose = "booking-cancel"
+	// PurposeCalendar authorises the booking's ICS download.
+	PurposeCalendar TokenPurpose = "booking-ics"
+)
+
+// Signer mints and verifies the signed links that authorise one booking's
+// routes. The tokens are stateless: the booking id is the message, so nothing
+// has to be stored to check one, and a token does not expire — the link in a
+// confirmation email has to keep working months later.
+type Signer struct {
 	key []byte
 }
 
-// NewCancelSigner returns a signer keyed by secret, refusing a secret shorter
-// than 32 bytes.
-func NewCancelSigner(secret string) (*CancelSigner, error) {
-	if len(secret) < minCancelSecretBytes {
-		return nil, errors.New("cancel secret must be at least 32 bytes")
+// NewSigner returns a Signer keyed by secret, refusing a secret shorter than 32
+// bytes.
+func NewSigner(secret string) (*Signer, error) {
+	if len(secret) < minSigningSecretBytes {
+		return nil, errors.New("signing secret must be at least 32 bytes")
 	}
-	return &CancelSigner{key: []byte(secret)}, nil
+	return &Signer{key: []byte(secret)}, nil
 }
 
-// Token returns the cancel token for one booking id.
-func (s *CancelSigner) Token(id uuid.UUID) string {
-	return base64.RawURLEncoding.EncodeToString(s.mac(id))
+// Token returns the token that authorises purpose for the booking with id.
+func (s *Signer) Token(purpose TokenPurpose, id uuid.UUID) string {
+	return base64.RawURLEncoding.EncodeToString(s.mac(purpose, id))
 }
 
-// Verify reports whether token authorises cancelling the booking with id.
-func (s *CancelSigner) Verify(id uuid.UUID, token string) bool {
+// Verify reports whether token authorises purpose for the booking with id.
+func (s *Signer) Verify(purpose TokenPurpose, id uuid.UUID, token string) bool {
 	got, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
 		return false
 	}
-	return hmac.Equal(got, s.mac(id))
+	return hmac.Equal(got, s.mac(purpose, id))
 }
 
-// mac is the HMAC-SHA256 over the prefix and the booking id.
-func (s *CancelSigner) mac(id uuid.UUID) []byte {
+// mac is the HMAC-SHA256 over the purpose, a separator and the booking id.
+func (s *Signer) mac(purpose TokenPurpose, id uuid.UUID) []byte {
 	mac := hmac.New(sha256.New, s.key)
-	mac.Write([]byte(cancelTokenPrefix))
+	mac.Write([]byte(purpose))
+	mac.Write([]byte(":"))
 	mac.Write(id[:])
 	return mac.Sum(nil)
 }

@@ -17,7 +17,8 @@ type Deps struct {
 	Staff        *app.Staff
 	Availability *app.Availability
 	Bookings     *app.Bookings
-	Views        *Views
+	Dashboard    *app.Dashboard
+	Public       *app.Public
 	Clock        clock.Clock
 	Login        *Limiter
 	Reset        *Limiter
@@ -48,13 +49,19 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /login", s.loginStart)
 	mux.HandleFunc("POST /app/logout", s.endSession)
 	mux.HandleFunc("GET /app", s.withUser(s.dashboard))
+	mux.HandleFunc("GET /app/calendar", s.withUser(s.calendar))
+
+	// The vendored assets are served from the binary, not from disk.
+	mux.HandleFunc("GET /static/{file}", s.staticAsset)
 
 	// The public booking routes take no session: the customer is not signed in,
-	// and the cancel routes carry their own signed token.
+	// and the cancel and calendar routes carry their own signed token.
+	mux.HandleFunc("GET /b/{slug}", s.landing)
 	mux.HandleFunc("GET /b/{slug}/slots", s.slots)
 	mux.HandleFunc("POST /b/{slug}/bookings", s.createBooking)
 	mux.HandleFunc("GET /b/{slug}/bookings/{id}", s.bookingPage)
 	mux.HandleFunc("POST /b/{slug}/bookings/{id}/cancel", s.cancelBooking)
+	mux.HandleFunc("GET /b/{slug}/bookings/{id}/ics", s.bookingCalendar)
 
 	// The tenant account routes and the services/staff routes cannot share
 	// one mux: POST /app/{slug}/login and POST /app/services/{id} overlap at

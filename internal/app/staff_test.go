@@ -18,6 +18,7 @@ type fakeStaffStore struct {
 	writeErr error
 
 	tenantID uuid.UUID
+	actorID  uuid.UUID
 	created  StaffInput
 	updated  StaffInput
 	activeID uuid.UUID
@@ -33,23 +34,26 @@ func (f *fakeStaffStore) ListStaff(_ context.Context, tenantID uuid.UUID) ([]dom
 	return f.staff, nil
 }
 
-func (f *fakeStaffStore) CreateStaff(_ context.Context, tenantID uuid.UUID, in StaffInput) error {
+func (f *fakeStaffStore) CreateStaff(_ context.Context, tenantID, actor uuid.UUID, in StaffInput) error {
 	f.tenantID = tenantID
+	f.actorID = actor
 	f.created = in
 	f.writes++
 	return f.writeErr
 }
 
-func (f *fakeStaffStore) UpdateStaff(_ context.Context, tenantID, id uuid.UUID, in StaffInput) error {
+func (f *fakeStaffStore) UpdateStaff(_ context.Context, tenantID, actor, id uuid.UUID, in StaffInput) error {
 	f.tenantID = tenantID
+	f.actorID = actor
 	f.updated = in
 	f.activeID = id
 	f.writes++
 	return f.writeErr
 }
 
-func (f *fakeStaffStore) SetStaffActive(_ context.Context, tenantID, id uuid.UUID, active bool) error {
+func (f *fakeStaffStore) SetStaffActive(_ context.Context, tenantID, actor, id uuid.UUID, active bool) error {
 	f.tenantID = tenantID
+	f.actorID = actor
 	f.activeID = id
 	f.active = active
 	f.writes++
@@ -151,8 +155,12 @@ func TestStaffSetActiveReachesStore(t *testing.T) {
 	tenantID := uuid.New()
 	id := uuid.New()
 	store := &fakeStaffStore{}
-	if err := NewStaff(store).SetActive(t.Context(), ownerActor(tenantID), id, false); err != nil {
+	actor := ownerActor(tenantID)
+	if err := NewStaff(store).SetActive(t.Context(), actor, id, false); err != nil {
 		t.Fatalf("SetActive: %v", err)
+	}
+	if store.actorID != actor.ID {
+		t.Errorf("stored actor = %v, want the acting login %v", store.actorID, actor.ID)
 	}
 	if store.activeID != id || store.active || store.tenantID != tenantID {
 		t.Errorf("SetStaffActive(%v, %v, %v), want (%v, %v, %v)",

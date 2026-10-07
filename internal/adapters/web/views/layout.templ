@@ -1,10 +1,16 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Slotwise</title>
-<style>
+package views
+
+const htmxFile = "/static/htmx-2.0.4.min.js"
+
+templ Layout() {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Slotwise</title>
+			<script src={ htmxFile } defer></script>
+			<style>
   * { box-sizing: border-box; }
   body {
     margin: 0 auto;
@@ -30,11 +36,16 @@
   th, td { border: 1px solid #c4c4c4; padding: .4rem .5rem; text-align: left; vertical-align: top; }
   th { background: #f3f3f3; }
   td form { margin: .25rem 0; }
+  .day { min-width: 7rem; }
+  .booking { border-left: 3px solid #1a5fb4; padding-left: .4rem; margin: .25rem 0; }
+  .booking.cancelled { border-left-color: #b3261e; color: #5f6368; text-decoration: line-through; }
+  .toolbar { display: flex; gap: .5rem; align-items: baseline; margin: .75rem 0; }
   footer { margin-top: 3rem; padding-top: .75rem; border-top: 1px solid #e0e0e0; color: #5f6368; font-size: .85rem; }
 </style>
-</head>
-<body>
-{{template "content" .}}
-<footer>Slotwise — scheduling for small teams.</footer>
-</body>
-</html>
+		</head>
+		<body>
+			{ children... }
+			<footer>Slotwise — scheduling for small teams.</footer>
+		</body>
+	</html>
+}

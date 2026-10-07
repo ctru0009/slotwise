@@ -14,7 +14,6 @@ import (
 )
 
 const completeJob = `-- name: CompleteJob :execrows
-
 UPDATE jobs
    SET status = 'done', locked_by = NULL, locked_until = NULL, updated_at = now()
  WHERE id = $1 AND locked_by = $2::text AND attempts = $3 AND status = 'running'
@@ -26,12 +25,6 @@ type CompleteJobParams struct {
 	Attempts int32
 }
 
-// Every transition is guarded by the claim that produced the caller's job: the
-// worker id and the attempt count together are a fencing token. A stale claim
-// whose lease expired and was reclaimed matches neither (the reclaim bumped
-// attempts), so its write is refused instead of clobbering the live claimant;
-// and two processes that happen to share a worker id still cannot confuse
-// their claims.
 func (q *Queries) CompleteJob(ctx context.Context, arg CompleteJobParams) (int64, error) {
 	result, err := q.db.Exec(ctx, completeJob, arg.ID, arg.WorkerID, arg.Attempts)
 	if err != nil {
@@ -95,6 +88,58 @@ func (q *Queries) InsertBookingJob(ctx context.Context, arg InsertBookingJobPara
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const listDeadJobs = `-- name: ListDeadJobs :many
+
+SELECT id, kind, attempts, last_error, updated_at
+  FROM jobs
+ WHERE status = 'dead'
+ ORDER BY updated_at DESC, id
+ LIMIT $1
+`
+
+type ListDeadJobsRow struct {
+	ID        uuid.UUID
+	Kind      string
+	Attempts  int32
+	LastError pgtype.Text
+	UpdatedAt time.Time
+}
+
+// Every transition is guarded by the claim that produced the caller's job: the
+// worker id and the attempt count together are a fencing token. A stale claim
+// whose lease expired and was reclaimed matches neither (the reclaim bumped
+// attempts), so its write is refused instead of clobbering the live claimant;
+// and two processes that happen to share a worker id still cannot confuse
+// their claims.
+// Death is terminal and only an operator requeues a dead job, so the dashboard
+// shows the tenant's dead letters read-only, newest first, and says nothing
+// about them.
+func (q *Queries) ListDeadJobs(ctx context.Context, rowLimit int32) ([]ListDeadJobsRow, error) {
+	rows, err := q.db.Query(ctx, listDeadJobs, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeadJobsRow{}
+	for rows.Next() {
+		var i ListDeadJobsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Attempts,
+			&i.LastError,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const releaseJob = `-- name: ReleaseJob :execrows

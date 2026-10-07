@@ -1,0 +1,11 @@
+package views
+
+templ Error(page ErrorPage) {
+	@Layout() {
+		<h1>
+			{ page.Status } { page.Title }
+		</h1>
+		<p>{ page.Message }</p>
+		<p><a href="/login">Back to sign in</a></p>
+	}
+}

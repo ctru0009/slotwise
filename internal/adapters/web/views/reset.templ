@@ -1,0 +1,20 @@
+package views
+
+// Reset is the new-password page reached from a reset link, with the token the
+// link carries in a hidden field.
+templ Reset(page ResetPage) {
+	@Layout() {
+		<h1>Choose a new password</h1>
+		if page.Error != "" {
+			<p class="error">{ page.Error }</p>
+		}
+		<form method="post" action={ "/app/" + page.Tenant.Slug + "/reset" }>
+			<input type="hidden" name="token" value={ page.Token }/>
+			<p>
+				<label for="password">New password</label>
+				<input id="password" name="password" type="password" minlength="12" autocomplete="new-password" required/>
+			</p>
+			<p><button type="submit">Set new password</button></p>
+		</form>
+	}
+}

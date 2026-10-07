@@ -1,0 +1,22 @@
+package views
+
+// Forgot is the password reset request page for one tenant: the email form,
+// or the notice that a link is on its way once the request is sent.
+templ Forgot(page ForgotPage) {
+	@Layout() {
+		<h1>Reset your password</h1>
+		if page.Sent {
+			<p class="notice">If that email is registered, a reset link is on its way.</p>
+		} else {
+			<p>Enter the email address you use for { page.Tenant.Name }.</p>
+			<form method="post" action={ "/app/" + page.Tenant.Slug + "/forgot" }>
+				<p>
+					<label for="email">Email</label>
+					<input id="email" name="email" type="email" autocomplete="username" required/>
+				</p>
+				<p><button type="submit">Send reset link</button></p>
+			</form>
+		}
+		<p><a href={ "/app/" + page.Tenant.Slug + "/login" }>Back to sign in</a></p>
+	}
+}

@@ -94,7 +94,7 @@ func testWorkerConfig(id string) worker.Config {
 // sender.
 func newTestWorker(t *testing.T, clk clock.Clock, id string, db *postgres.DB, sender app.Sender) *worker.Worker {
 	t.Helper()
-	signer, err := app.NewCancelSigner(testWorkerSecret)
+	signer, err := app.NewSigner(testWorkerSecret)
 	if err != nil {
 		t.Fatalf("building the signer: %v", err)
 	}

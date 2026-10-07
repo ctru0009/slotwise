@@ -56,7 +56,7 @@ func runWorkerChild(mode string) int {
 	}
 	defer db.Close()
 
-	signer, err := app.NewCancelSigner(testWorkerSecret)
+	signer, err := app.NewSigner(testWorkerSecret)
 	if err != nil {
 		return childFailed("building the cancel signer", err)
 	}

@@ -67,6 +67,9 @@ func insertBooking(ctx context.Context, q *dbgen.Queries, tenantID uuid.UUID, in
 		if err := enqueueJobs(ctx, q, tenantID, stored, in); err != nil {
 			return domain.Booking{}, err
 		}
+		if err := recordAudit(ctx, q, tenantID, uuid.Nil, domain.AuditBookingCreated, auditSubject{booking: stored.ID}); err != nil {
+			return domain.Booking{}, err
+		}
 		return stored, nil
 	case errors.Is(err, pgx.ErrNoRows):
 		existing, readErr := bookingByKey(ctx, q, tenantID, in.IdempotencyKey)
@@ -142,15 +145,49 @@ func (db *DB) BookingByID(ctx context.Context, tenantID, id uuid.UUID) (domain.B
 // domain.ErrNotFound.
 func (db *DB) CancelBooking(ctx context.Context, tenantID, id uuid.UUID) error {
 	return db.WithTenantRetry(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		affected, err := dbgen.New(tx).CancelBooking(ctx, id)
+		q := dbgen.New(tx)
+		affected, err := q.CancelBooking(ctx, id)
 		if err != nil {
 			return fmt.Errorf("cancelling booking: %w", err)
 		}
 		if affected == 0 {
 			return fmt.Errorf("booking %s: %w", id, domain.ErrNotFound)
 		}
+		return recordAudit(ctx, q, tenantID, uuid.Nil, domain.AuditBookingCancelled, auditSubject{booking: id})
+	})
+}
+
+// ListBookingsInRange reads the bookings that occupy any part of [from, to)
+// with the service and staff names the calendar shows; never nil.
+func (db *DB) ListBookingsInRange(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]app.BookingInRange, error) {
+	bookings := []app.BookingInRange{}
+	err := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := dbgen.New(tx).ListBookingsInRange(ctx, dbgen.ListBookingsInRangeParams{
+			RangeStart: from,
+			RangeEnd:   to,
+		})
+		if err != nil {
+			return fmt.Errorf("listing bookings in range: %w", err)
+		}
+		for _, row := range rows {
+			bookings = append(bookings, app.BookingInRange{
+				ID:           row.ID,
+				StaffID:      row.StaffID,
+				ServiceID:    row.ServiceID,
+				StaffName:    row.StaffName,
+				ServiceName:  row.ServiceName,
+				CustomerName: row.CustomerName,
+				StartsAt:     row.StartsAt,
+				EndsAt:       row.EndsAt,
+				Status:       domain.BookingStatus(row.Status),
+			})
+		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return bookings, nil
 }
 
 // lockActiveStaffRow takes the active staff member's row lock inside the

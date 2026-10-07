@@ -13,7 +13,7 @@ import (
 	"github.com/ctru0009/slotwise/internal/domain"
 )
 
-// testCancelSecret is long enough for NewCancelSigner.
+// testCancelSecret is long enough for NewSigner.
 const testCancelSecret = "app-test-cancel-secret-32-bytes-plus"
 
 // recordingSender captures what the Jobs use case would have emailed.
@@ -71,7 +71,7 @@ func newJobsFixture(t *testing.T) jobsFixture {
 	}
 	store := &fakeBookingStore{messages: map[uuid.UUID]BookingMessage{booking.ID: source}}
 	sender := &recordingSender{}
-	signer, err := NewCancelSigner(testCancelSecret)
+	signer, err := NewSigner(testCancelSecret)
 	if err != nil {
 		t.Fatalf("building the signer: %v", err)
 	}

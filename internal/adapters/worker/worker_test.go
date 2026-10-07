@@ -138,6 +138,10 @@ func (s *fakeStore) DeadLetterJob(ctx context.Context, workerID string, job doma
 	return s.applied, nil
 }
 
+func (s *fakeStore) ListDeadJobs(_ context.Context, _ uuid.UUID, _ int) ([]app.DeadJob, error) {
+	return nil, nil
+}
+
 func (s *fakeStore) ReleaseJob(ctx context.Context, workerID string, job domain.Job) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

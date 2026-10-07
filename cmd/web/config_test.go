@@ -10,7 +10,7 @@ func envMap(values map[string]string) func(string) string {
 	return func(key string) string { return values[key] }
 }
 
-// testCancelKey is long enough for app.NewCancelSigner, so loadConfig
+// testCancelKey is long enough for app.NewSigner, so loadConfig
 // accepts it wherever a test needs the rest of the environment.
 const testCancelKey = "config-test-cancel-secret-32-bytes-plus"
 

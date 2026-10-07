@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/ctru0009/slotwise/internal/adapters/worker"
+	"github.com/ctru0009/slotwise/internal/app"
 	"github.com/ctru0009/slotwise/internal/clock"
 	"github.com/ctru0009/slotwise/internal/domain"
 )
@@ -19,7 +22,7 @@ func envMap(values map[string]string) func(string) string {
 	return func(key string) string { return values[key] }
 }
 
-// testCancelKey is long enough for app.NewCancelSigner, so this environment
+// testCancelKey is long enough for app.NewSigner, so this environment
 // matches one the real composition accepts.
 const testCancelKey = "config-test-cancel-secret-32-bytes-plus"
 
@@ -55,6 +58,10 @@ func (stubStore) RetryJob(context.Context, string, domain.Job, time.Time, string
 
 func (stubStore) DeadLetterJob(context.Context, string, domain.Job, string) (bool, error) {
 	return true, nil
+}
+
+func (stubStore) ListDeadJobs(context.Context, uuid.UUID, int) ([]app.DeadJob, error) {
+	return nil, nil
 }
 
 func (stubStore) ReleaseJob(context.Context, string, domain.Job) (bool, error) {
