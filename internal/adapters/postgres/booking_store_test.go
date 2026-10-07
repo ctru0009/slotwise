@@ -31,6 +31,7 @@ type bookingFixture struct {
 	appPool *pgxpool.Pool
 	db      *postgres.DB
 	useCase *app.Bookings
+	clock   *clock.Fake
 }
 
 func newBookingFixture(t *testing.T, slug string) bookingFixture {
@@ -54,6 +55,7 @@ func newBookingFixture(t *testing.T, slug string) bookingFixture {
 		appPool: pgtest.AppPool(t, appDSN),
 		db:      db,
 		useCase: app.NewBookings(db, db, db, clk, signer),
+		clock:   clk,
 	}
 }
 

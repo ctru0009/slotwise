@@ -69,6 +69,59 @@ func (q *Queries) BookingByIdempotencyKey(ctx context.Context, arg BookingByIdem
 	return i, err
 }
 
+const bookingMessage = `-- name: BookingMessage :one
+SELECT b.id, b.tenant_id, b.staff_id, b.service_id, b.customer_name, b.customer_email,
+       b.starts_at, b.ends_at, b.status, b.created_at,
+       t.slug, t.name AS tenant_name, t.timezone,
+       s.name AS service_name, st.name AS staff_name
+  FROM bookings b
+  JOIN tenants t ON t.id = b.tenant_id
+  JOIN services s ON s.tenant_id = b.tenant_id AND s.id = b.service_id
+  JOIN staff st ON st.tenant_id = b.tenant_id AND st.id = b.staff_id
+ WHERE b.id = $1
+`
+
+type BookingMessageRow struct {
+	ID            uuid.UUID
+	TenantID      uuid.UUID
+	StaffID       uuid.UUID
+	ServiceID     uuid.UUID
+	CustomerName  string
+	CustomerEmail string
+	StartsAt      time.Time
+	EndsAt        time.Time
+	Status        string
+	CreatedAt     time.Time
+	Slug          string
+	TenantName    string
+	Timezone      string
+	ServiceName   string
+	StaffName     string
+}
+
+func (q *Queries) BookingMessage(ctx context.Context, id uuid.UUID) (BookingMessageRow, error) {
+	row := q.db.QueryRow(ctx, bookingMessage, id)
+	var i BookingMessageRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.StaffID,
+		&i.ServiceID,
+		&i.CustomerName,
+		&i.CustomerEmail,
+		&i.StartsAt,
+		&i.EndsAt,
+		&i.Status,
+		&i.CreatedAt,
+		&i.Slug,
+		&i.TenantName,
+		&i.Timezone,
+		&i.ServiceName,
+		&i.StaffName,
+	)
+	return i, err
+}
+
 const cancelBooking = `-- name: CancelBooking :execrows
 UPDATE bookings SET status = 'cancelled' WHERE id = $1
 `

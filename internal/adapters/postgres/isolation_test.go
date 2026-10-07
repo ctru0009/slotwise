@@ -38,6 +38,7 @@ func TestTenantIsolation(t *testing.T) {
 	assertCrossTenantDeleteTouchesNothing(t, db, tenantA.Tenant, bookingB)
 	assertAuthTablesIsolated(t, db, appDSN, owner, tenantA, tenantB)
 	assertAvailabilityTablesIsolated(t, db, owner, tenantA, tenantB)
+	assertJobsIsolated(t, db, appDSN, owner, tenantA, tenantB)
 	assertMalformedTenantMatchesNothing(t, db, tenantA.Tenant)
 	assertTenantlessConnectionSeesNothing(t, appDSN)
 }
@@ -206,8 +207,8 @@ func assertMalformedTenantMatchesNothing(t *testing.T, db *postgres.DB, tenant u
 }
 
 // assertTenantlessConnectionSeesNothing checks that a connection with no tenant
-// set reads no bookings, so a missing set_config cannot leak another tenant's
-// data.
+// set reads no bookings and no jobs, so a missing set_config cannot leak another
+// tenant's data.
 func assertTenantlessConnectionSeesNothing(t *testing.T, appDSN string) {
 	t.Helper()
 	ctx := t.Context()
@@ -218,12 +219,15 @@ func assertTenantlessConnectionSeesNothing(t *testing.T, appDSN string) {
 	}
 	t.Cleanup(free.Close)
 
-	var visible int
-	if err := free.QueryRow(ctx, "SELECT count(*) FROM bookings").Scan(&visible); err != nil {
-		t.Fatalf("counting without a tenant: %v", err)
+	var bookings, jobs int
+	if err := free.QueryRow(ctx, "SELECT count(*) FROM bookings").Scan(&bookings); err != nil {
+		t.Fatalf("counting bookings without a tenant: %v", err)
 	}
-	if visible != 0 {
-		t.Errorf("tenantless connection sees %d bookings, want 0", visible)
+	if err := free.QueryRow(ctx, "SELECT count(*) FROM jobs").Scan(&jobs); err != nil {
+		t.Fatalf("counting jobs without a tenant: %v", err)
+	}
+	if bookings != 0 || jobs != 0 {
+		t.Errorf("a tenantless connection sees %d bookings and %d jobs, want 0 and 0", bookings, jobs)
 	}
 }
 
@@ -532,5 +536,126 @@ func assertCrossTenantAvailabilityInsertRejected(t *testing.T, db *postgres.DB, 
 	})
 	if !hasSQLState(offErr, "23503") {
 		t.Errorf("absence pointed at another tenant's staff returned %v, want SQLSTATE 23503", offErr)
+	}
+}
+
+// assertJobsIsolated proves the queue sits behind the same tenant policy as
+// every other table: tenant A reads none of B's jobs, its writes touch none of
+// B's rows, and both cross-tenant insert shapes are rejected — the policy
+// refuses B's tenant id, and the composite foreign key refuses A's own tenant
+// pointing at B's booking. job_claim is the one sanctioned exception, and it is
+// pinned in the job store tests, not here.
+func assertJobsIsolated(t *testing.T, db *postgres.DB, appDSN string, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture) {
+	t.Helper()
+
+	bookingB := pgtest.SeedBooking(t, owner, tenantB, "2026-11-04T09:00:00Z")
+	jobB := pgtest.SeedJob(t, owner, tenantB.Tenant, bookingB, "booking_confirmation", time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC))
+
+	assertJobsReadsScoped(t, db, tenantA.Tenant, jobB)
+	assertJobsWritesUntouchable(t, db, owner, tenantA.Tenant, jobB)
+	assertCrossTenantJobsInsertRejected(t, db, tenantA, tenantB, bookingB)
+	assertTenantlessConnectionSeesNoJobs(t, appDSN)
+}
+
+// assertJobsReadsScoped checks that tenant A sees none of tenant B's jobs.
+func assertJobsReadsScoped(t *testing.T, db *postgres.DB, tenantA, jobB uuid.UUID) {
+	t.Helper()
+
+	err := db.WithTenant(t.Context(), tenantA, func(ctx context.Context, tx pgx.Tx) error {
+		var own, foreign int
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM jobs").Scan(&own); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM jobs WHERE id = $1", jobB).Scan(&foreign); err != nil {
+			return err
+		}
+		if own != 0 {
+			t.Errorf("tenant A sees %d jobs, want 0 of tenant B's", own)
+		}
+		if foreign != 0 {
+			t.Errorf("tenant A sees %d of tenant B's jobs, want 0", foreign)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reading jobs as tenant A: %v", err)
+	}
+}
+
+// assertJobsWritesUntouchable checks that A's updates and deletes reach none of
+// B's rows, and that B's job is intact afterwards.
+func assertJobsWritesUntouchable(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, jobB uuid.UUID) {
+	t.Helper()
+
+	err := db.WithTenant(t.Context(), tenantA, func(ctx context.Context, tx pgx.Tx) error {
+		update, err := tx.Exec(ctx, "UPDATE jobs SET status = 'dead' WHERE id = $1", jobB)
+		if err != nil {
+			return err
+		}
+		if update.RowsAffected() != 0 {
+			t.Errorf("tenant A updated %d of tenant B's jobs, want 0", update.RowsAffected())
+		}
+		del, err := tx.Exec(ctx, "DELETE FROM jobs WHERE id = $1", jobB)
+		if err != nil {
+			return err
+		}
+		if del.RowsAffected() != 0 {
+			t.Errorf("tenant A deleted %d of tenant B's jobs, want 0", del.RowsAffected())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("writing jobs as tenant A: %v", err)
+	}
+
+	var status string
+	if err := owner.QueryRow(t.Context(), "SELECT status FROM jobs WHERE id = $1", jobB).Scan(&status); err != nil {
+		t.Fatalf("reading tenant B's job as the owner: %v", err)
+	}
+	if status != "ready" {
+		t.Errorf("tenant B's job status = %q after tenant A's writes, want its original ready", status)
+	}
+}
+
+// assertCrossTenantJobsInsertRejected covers both insert shapes: B's tenant id
+// under A's context is refused by the policy, and A's own tenant naming B's
+// booking is refused by the tenant-consistent foreign key.
+func assertCrossTenantJobsInsertRejected(t *testing.T, db *postgres.DB, tenantA, tenantB pgtest.Fixture, bookingB uuid.UUID) {
+	t.Helper()
+	ctx := t.Context()
+
+	policyErr := db.WithTenant(ctx, tenantA.Tenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO jobs (tenant_id, booking_id, kind, run_at)
+			VALUES ($1::uuid, $2::uuid, 'booking_confirmation', now())`, tenantB.Tenant, bookingB)
+		return err
+	})
+	if !hasSQLState(policyErr, "42501") {
+		t.Errorf("inserting a job for another tenant returned %v, want SQLSTATE 42501", policyErr)
+	}
+
+	fkViolation := db.WithTenant(ctx, tenantA.Tenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO jobs (tenant_id, booking_id, kind, run_at)
+			VALUES ($1::uuid, $2::uuid, 'booking_confirmation', now())`, tenantA.Tenant, bookingB)
+		return err
+	})
+	if !hasSQLState(fkViolation, "23503") {
+		t.Errorf("job pointed at another tenant's booking returned %v, want SQLSTATE 23503", fkViolation)
+	}
+}
+
+// assertTenantlessConnectionSeesNoJobs checks that a connection with no tenant
+// set reads no queue rows at all.
+func assertTenantlessConnectionSeesNoJobs(t *testing.T, appDSN string) {
+	t.Helper()
+
+	tenantless := pgtest.AppPool(t, appDSN)
+	var visible int
+	if err := tenantless.QueryRow(t.Context(), "SELECT count(*) FROM jobs").Scan(&visible); err != nil {
+		t.Fatalf("counting jobs without a tenant: %v", err)
+	}
+	if visible != 0 {
+		t.Errorf("a tenantless connection sees %d jobs, want 0", visible)
 	}
 }
