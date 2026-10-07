@@ -2,22 +2,26 @@ package web
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/ctru0009/slotwise/internal/adapters/web/views"
 	"github.com/ctru0009/slotwise/internal/app"
 	"github.com/ctru0009/slotwise/internal/domain"
 )
 
 // The messages the public booking pages render.
 const (
-	messageBadService     = "That does not look like a service."
-	messageSlotTaken      = "That time was just taken. Pick another one."
-	messageIdempotencyKey = "The booking could not be identified. Try again."
-	messageCancelLink     = "That cancel link is not valid."
+	messageBadService       = "That does not look like a service."
+	messageSlotTaken        = "That time was just taken. Pick another one."
+	messageIdempotencyKey   = "The booking could not be identified. Try again."
+	messageCancelLink       = "That cancel link is not valid."
+	messageCalendarLink     = "That calendar link is not valid."
+	messageCancelledBooking = "That booking was cancelled, so it has no calendar file."
 )
 
 // slots serves the public slot list at GET /b/{slug}/slots?service=&from=&to=.
@@ -29,37 +33,37 @@ func (s *server) slots(w http.ResponseWriter, r *http.Request) {
 	}
 	serviceID, err := uuid.Parse(r.URL.Query().Get("service"))
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageBadService)
+		fail(w, r, http.StatusBadRequest, messageBadService)
 		return
 	}
 	from, err := domain.ParseLocalDate(r.URL.Query().Get("from"))
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, validationMessage(err))
+		fail(w, r, http.StatusBadRequest, validationMessage(err))
 		return
 	}
 	to := from
 	if raw := r.URL.Query().Get("to"); raw != "" {
 		if to, err = domain.ParseLocalDate(raw); err != nil {
-			s.deps.Views.fail(w, r, http.StatusBadRequest, validationMessage(err))
+			fail(w, r, http.StatusBadRequest, validationMessage(err))
 			return
 		}
 	}
 	// One search is a whole day of grid for every staff member, so the route
 	// is throttled per business before any of that work.
 	if !s.deps.SlotSearches.Allow(tenant.ID.String(), s.deps.Clock.Now()) {
-		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
+		fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
 	slots, err := s.deps.Availability.Search(r.Context(), tenant.ID, serviceID, from, to)
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		s.deps.Views.fail(w, r, http.StatusNotFound, messageNoRecord)
+		fail(w, r, http.StatusNotFound, messageNoRecord)
 		return
 	case errors.Is(err, domain.ErrInvalidInput):
-		s.deps.Views.fail(w, r, http.StatusBadRequest, validationMessage(err))
+		fail(w, r, http.StatusBadRequest, validationMessage(err))
 		return
 	case err != nil:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 		return
 	}
 
@@ -67,22 +71,23 @@ func (s *server) slots(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	views := make([]SlotView, 0, len(slots))
+	rows := make([]views.Slot, 0, len(slots))
 	for _, slot := range slots {
-		views = append(views, SlotView{
+		rows = append(rows, views.Slot{
 			StaffID:        slot.StaffID,
+			StaffName:      slot.StaffName,
 			StartsAt:       slot.Start,
 			IdempotencyKey: newIdempotencyKey(),
 		})
 	}
-	s.render(w, r, PageSlots, SlotsPage{
+	renderPage(r.Context(), w, views.Slots(views.SlotsPage{
 		Tenant:    tenant,
 		Location:  loc,
 		ServiceID: serviceID,
 		From:      from.String(),
 		To:        to.String(),
-		Slots:     views,
-	})
+		Slots:     rows,
+	}))
 }
 
 // createBooking books one slot at POST /b/{slug}/bookings and sends the
@@ -94,18 +99,18 @@ func (s *server) createBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	in, err := bookingForm(r)
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, validationMessage(err))
+		fail(w, r, http.StatusBadRequest, validationMessage(err))
 		return
 	}
 	// The key is what makes a retry safe, so a request without one is refused
 	// rather than booked unchecked.
 	if in.IdempotencyKey == "" {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageIdempotencyKey)
+		fail(w, r, http.StatusBadRequest, messageIdempotencyKey)
 		return
 	}
 	// Two buckets guard the public write: one per business, which no request can
@@ -114,26 +119,26 @@ func (s *server) createBooking(w http.ResponseWriter, r *http.Request) {
 	// a distributed attacker with many businesses and addresses is bounded at
 	// the edge, which is M7's job.
 	if !s.deps.BookingWrites.Allow(tenant.ID.String(), s.deps.Clock.Now()) {
-		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
+		fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
 	if !s.deps.BookingPosts.Allow(accountKey(tenant.ID, in.CustomerEmail), s.deps.Clock.Now()) {
-		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
+		fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
 	booking, err := s.deps.Bookings.Create(r.Context(), tenant.ID, in)
 	switch {
 	case errors.Is(err, domain.ErrInvalidInput):
-		s.deps.Views.fail(w, r, http.StatusBadRequest, validationMessage(err))
+		fail(w, r, http.StatusBadRequest, validationMessage(err))
 		return
 	case errors.Is(err, domain.ErrNotFound):
-		s.deps.Views.fail(w, r, http.StatusNotFound, messageNoRecord)
+		fail(w, r, http.StatusNotFound, messageNoRecord)
 		return
 	case errors.Is(err, domain.ErrSlotTaken):
-		s.deps.Views.fail(w, r, http.StatusConflict, messageSlotTaken)
+		fail(w, r, http.StatusConflict, messageSlotTaken)
 		return
 	case err != nil:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 		return
 	}
 	// Every piece of the target is escaped on the way in, so the redirect can
@@ -158,20 +163,81 @@ func (s *server) bookingPage(w http.ResponseWriter, r *http.Request) {
 	booking, err := s.deps.Bookings.Get(r.Context(), tenant.ID, id, token)
 	switch {
 	case errors.Is(err, domain.ErrForbidden):
-		s.deps.Views.fail(w, r, http.StatusForbidden, messageCancelLink)
+		fail(w, r, http.StatusForbidden, messageCancelLink)
 		return
 	case errors.Is(err, domain.ErrNotFound):
-		s.deps.Views.fail(w, r, http.StatusNotFound, messageNoRecord)
+		fail(w, r, http.StatusNotFound, messageNoRecord)
 		return
 	case err != nil:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 		return
 	}
 	loc, ok := s.tenantLocation(w, r, tenant)
 	if !ok {
 		return
 	}
-	s.render(w, r, PageBooking, BookingPage{Tenant: tenant, Location: loc, Booking: booking, Token: token})
+	renderPage(r.Context(), w, views.Booking(views.BookingPage{
+		Tenant:        tenant,
+		Location:      loc,
+		Booking:       booking,
+		Token:         token,
+		CalendarToken: s.deps.Bookings.CalendarToken(booking.ID),
+	}))
+}
+
+// bookingCalendar serves the calendar file for the booking a signed link names
+// at GET /b/{slug}/bookings/{id}/ics?token=…. The token is verified before the
+// booking is read, so a wrong token never reaches the table; a cancelled
+// booking is refused with 410, because a client that re-fetches the link should
+// learn the appointment is gone rather than import it as a live event.
+func (s *server) bookingCalendar(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathID(w, r)
+	if !ok {
+		return
+	}
+	tenant, ok := s.tenantOr404(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.deps.Bookings.Calendar(r.Context(), tenant.ID, id, r.URL.Query().Get("token"))
+	switch {
+	case errors.Is(err, domain.ErrForbidden):
+		fail(w, r, http.StatusForbidden, messageCalendarLink)
+		return
+	case errors.Is(err, domain.ErrNotFound):
+		fail(w, r, http.StatusNotFound, messageNoRecord)
+		return
+	case err != nil:
+		fail(w, r, http.StatusInternalServerError, messageServerError)
+		return
+	}
+	if message.Booking.Status == domain.BookingCancelled {
+		fail(w, r, http.StatusGone, messageCancelledBooking)
+		return
+	}
+	loc, ok := s.tenantLocation(w, r, message.Tenant)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+calendarFilename(message, loc)+`"`)
+	body := renderCalendar(calendarEvent{
+		UID:         calendarUID(message.Booking.ID.String(), s.deps.BaseURL),
+		Summary:     message.ServiceName + " at " + message.Tenant.Name,
+		Description: "Appointment with " + message.StaffName,
+		Start:       message.Booking.StartsAt,
+		End:         message.Booking.EndsAt,
+		Stamp:       s.deps.Clock.Now(),
+	})
+	if _, err := io.WriteString(w, body); err != nil {
+		return
+	}
+}
+
+// calendarFilename names the download after the business and the appointment's
+// local date, so a customer holding several bookings can tell the files apart.
+func calendarFilename(message app.BookingMessage, loc *time.Location) string {
+	return message.Tenant.Slug + "-" + message.Booking.StartsAt.In(loc).Format("2006-01-02") + ".ics"
 }
 
 // cancelBooking cancels the booking a signed link names at POST
@@ -187,18 +253,18 @@ func (s *server) cancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	token := r.FormValue("token")
 	err := s.deps.Bookings.Cancel(r.Context(), tenant.ID, id, token)
 	switch {
 	case errors.Is(err, domain.ErrForbidden):
-		s.deps.Views.fail(w, r, http.StatusForbidden, messageCancelLink)
+		fail(w, r, http.StatusForbidden, messageCancelLink)
 	case errors.Is(err, domain.ErrNotFound):
-		s.deps.Views.fail(w, r, http.StatusNotFound, messageNoRecord)
+		fail(w, r, http.StatusNotFound, messageNoRecord)
 	case err != nil:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 	default:
 		// The id comes from the path and the token from the form, so both are
 		// escaped: the target is still a booking page under this business.
@@ -274,7 +340,7 @@ func newIdempotencyKey() string {
 func (s *server) tenantLocation(w http.ResponseWriter, r *http.Request, tenant domain.Tenant) (*time.Location, bool) {
 	loc, err := time.LoadLocation(tenant.Timezone)
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 		return nil, false
 	}
 	return loc, true

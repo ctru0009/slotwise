@@ -14,6 +14,16 @@ ON CONFLICT (tenant_id, booking_id, kind) DO NOTHING;
 -- and two processes that happen to share a worker id still cannot confuse
 -- their claims.
 
+-- Death is terminal and only an operator requeues a dead job, so the dashboard
+-- shows the tenant's dead letters read-only, newest first, and says nothing
+-- about them.
+-- name: ListDeadJobs :many
+SELECT id, kind, attempts, last_error, updated_at
+  FROM jobs
+ WHERE status = 'dead'
+ ORDER BY updated_at DESC, id
+ LIMIT @row_limit;
+
 -- name: CompleteJob :execrows
 UPDATE jobs
    SET status = 'done', locked_by = NULL, locked_until = NULL, updated_at = now()

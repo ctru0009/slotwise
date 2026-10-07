@@ -11,7 +11,7 @@ import (
 // createService adds a service from the dashboard form.
 func (s *server) createService(w http.ResponseWriter, r *http.Request, user domain.User) {
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	in, err := serviceForm(r)
@@ -33,7 +33,7 @@ func (s *server) updateService(w http.ResponseWriter, r *http.Request, user doma
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	in, err := serviceForm(r)
@@ -56,12 +56,12 @@ func (s *server) setServiceActive(w http.ResponseWriter, r *http.Request, user d
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	active, err := parseActive(r)
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageActiveFlag)
+		fail(w, r, http.StatusBadRequest, messageActiveFlag)
 		return
 	}
 	if err := s.deps.Services.SetActive(r.Context(), user, id, active); err != nil {

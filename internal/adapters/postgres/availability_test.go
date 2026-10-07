@@ -28,6 +28,9 @@ type availEnv struct {
 	owner   *pgxpool.Pool
 	tenantA pgtest.Fixture
 	tenantB pgtest.Fixture
+	// actorA is a seeded owner of tenant A: the catalogue writes the tests
+	// drive record the login that made them.
+	actorA  uuid.UUID
 	useCase *app.Availability
 }
 
@@ -36,11 +39,13 @@ func newAvailEnv(t *testing.T) availEnv {
 	appDSN, ownerDSN := pgtest.Start(t)
 	owner := pgtest.Owner(t, ownerDSN)
 	db := pgtest.AppDB(t, appDSN)
+	tenantA := seedScheduledTenant(t, owner, "a")
 	return availEnv{
 		db:      db,
 		owner:   owner,
-		tenantA: seedScheduledTenant(t, owner, "a"),
+		tenantA: tenantA,
 		tenantB: seedScheduledTenant(t, owner, "b"),
+		actorA:  pgtest.SeedUser(t, owner, tenantA, "avail-owner-a@example.com", "hash-a", "owner"),
 		useCase: app.NewAvailability(db, db, clock.NewFake(availInstant(2026, time.January, 1, 0, 0))),
 	}
 }
@@ -157,11 +162,11 @@ func TestAvailabilityTenancyAndExclusions(t *testing.T) {
 
 	assertAvailForeignRowsHidden(t, env, second)
 	assertAvailForeignWritesNotFound(t, env)
-	if err := env.db.SetStaffActive(t.Context(), env.tenantA.Tenant, second, false); err != nil {
+	if err := env.db.SetStaffActive(t.Context(), env.tenantA.Tenant, env.actorA, second, false); err != nil {
 		t.Fatalf("deactivating the second staff member: %v", err)
 	}
 	assertAvailInactiveStaffExcluded(t, env)
-	if err := env.db.SetServiceActive(t.Context(), env.tenantA.Tenant, env.tenantA.Service, false); err != nil {
+	if err := env.db.SetServiceActive(t.Context(), env.tenantA.Tenant, env.actorA, env.tenantA.Service, false); err != nil {
 		t.Fatalf("deactivating the service: %v", err)
 	}
 	assertAvailInactiveServiceNotFound(t, env)

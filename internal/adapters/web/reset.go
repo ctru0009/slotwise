@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/ctru0009/slotwise/internal/adapters/web/views"
 	"github.com/ctru0009/slotwise/internal/domain"
 )
 
@@ -17,8 +18,8 @@ func (s *server) forgotForm(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page := ForgotPage{Tenant: tenant, Sent: r.URL.Query().Get("sent") == "1"}
-	s.render(w, r, PageForgot, page)
+	page := views.ForgotPage{Tenant: tenant, Sent: r.URL.Query().Get("sent") == "1"}
+	renderPage(r.Context(), w, views.Forgot(page))
 }
 
 // forgotSubmit mails a reset link at POST /app/{slug}/forgot. It throttles
@@ -31,18 +32,18 @@ func (s *server) forgotSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	email := r.FormValue("email")
 	// Allow records the request: this endpoint is throttled on requests rather
 	// than failures, because the response is identical either way.
 	if !s.deps.Reset.Allow(accountKey(tenant.ID, email), s.deps.Clock.Now()) {
-		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
+		fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
 	if err := s.deps.Auth.RequestPasswordReset(r.Context(), tenant, email, s.deps.BaseURL); err != nil {
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 		return
 	}
 	http.Redirect(w, r, "/app/"+tenant.Slug+"/forgot?sent=1", http.StatusSeeOther)
@@ -55,8 +56,8 @@ func (s *server) resetForm(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page := ResetPage{Tenant: tenant, Token: r.URL.Query().Get("token")}
-	s.render(w, r, PageReset, page)
+	page := views.ResetPage{Tenant: tenant, Token: r.URL.Query().Get("token")}
+	renderPage(r.Context(), w, views.Reset(page))
 }
 
 // resetSubmit spends a reset token and stores the new password at
@@ -67,7 +68,7 @@ func (s *server) resetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	// Verifying a password costs a hash whatever the token is, so this
@@ -75,21 +76,21 @@ func (s *server) resetSubmit(w http.ResponseWriter, r *http.Request) {
 	// window is wide enough for someone retrying a link, and narrow enough that
 	// garbage tokens cannot pin the CPU.
 	if !s.deps.ResetSubmit.Allow(tenant.ID.String(), s.deps.Clock.Now()) {
-		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
+		fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
 	token := r.FormValue("token")
-	page := ResetPage{Tenant: tenant, Token: token}
+	page := views.ResetPage{Tenant: tenant, Token: token}
 	err := s.deps.Auth.ResetPassword(r.Context(), tenant.ID, token, r.FormValue("password"))
 	switch {
 	case errors.Is(err, domain.ErrResetTokenInvalid):
 		page.Error = messageResetLinkDead
-		s.render(w, r, PageReset, page)
+		renderPage(r.Context(), w, views.Reset(page))
 	case errors.Is(err, domain.ErrInvalidInput):
 		page.Error = err.Error()
-		s.render(w, r, PageReset, page)
+		renderPage(r.Context(), w, views.Reset(page))
 	case err != nil:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 	default:
 		http.Redirect(w, r, "/app/"+tenant.Slug+"/login?reset=1", http.StatusSeeOther)
 	}

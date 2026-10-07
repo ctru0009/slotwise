@@ -10,15 +10,12 @@ import (
 	"github.com/ctru0009/slotwise/internal/domain"
 )
 
-// Session keys. The ids are stored as UUID strings; the slug is kept so the
-// dashboard can name the tenant it renders, since tenants are addressed
-// publicly by slug and a session only holds the tenant's id otherwise. The
-// password hash is what the session was created against, so a password change
-// can retire the sessions that predate it.
+// Session keys. The ids are stored as UUID strings. The password hash is what
+// the session was created against, so a password change can retire the
+// sessions that predate it.
 const (
 	sessionTenantID     = "tenant_id"
 	sessionUserID       = "user_id"
-	sessionTenantSlug   = "tenant_slug"
 	sessionPasswordHash = "password_hash"
 )
 
@@ -56,7 +53,7 @@ func (s *server) withUser(next handlerFunc) http.HandlerFunc {
 			s.endSession(w, r)
 			return
 		case err != nil:
-			s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+			fail(w, r, http.StatusInternalServerError, messageServerError)
 			return
 		}
 		// A session that was opened with a different password is finished:
@@ -78,6 +75,19 @@ func (s *server) endSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Sessions.Destroy(r.Context()); err != nil {
 		slog.ErrorContext(r.Context(), "destroying session", "err", err)
 	}
+	redirectToLogin(w, r)
+}
+
+// redirectToLogin sends a caller whose session is gone to the sign-in page. An
+// htmx request gets HX-Redirect and an empty response instead of a 303: htmx
+// follows a redirect transparently, so it would otherwise render the login page
+// inside the dashboard fragment it asked to replace.
+func redirectToLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", "/login")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -90,21 +100,13 @@ func noStore(next http.Handler) http.Handler {
 	})
 }
 
-// render writes a page. A render failure can only be logged: the response has
-// already started by then.
-func (s *server) render(w http.ResponseWriter, r *http.Request, page string, data any) {
-	if err := s.deps.Views.Render(w, page, data); err != nil {
-		slog.ErrorContext(r.Context(), "rendering page", "page", page, "err", err)
-	}
-}
-
 // pathID parses the {id} path value, rendering the 404 page when it is not a
 // UUID. A malformed id, an unknown id and another tenant's id are all the same
 // 404: row level security hides the last two, and a 500 would tell them apart.
 func (s *server) pathID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusNotFound, messageNoRecord)
+		fail(w, r, http.StatusNotFound, messageNoRecord)
 		return uuid.Nil, false
 	}
 	return id, true

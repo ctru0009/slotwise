@@ -184,6 +184,67 @@ func (q *Queries) InsertBooking(ctx context.Context, arg InsertBookingParams) (B
 	return i, err
 }
 
+const listBookingsInRange = `-- name: ListBookingsInRange :many
+SELECT b.id, b.staff_id, b.service_id, b.customer_name, b.starts_at, b.ends_at, b.status,
+       s.name AS service_name, st.name AS staff_name
+  FROM bookings b
+  JOIN services s ON s.tenant_id = b.tenant_id AND s.id = b.service_id
+  JOIN staff st ON st.tenant_id = b.tenant_id AND st.id = b.staff_id
+ WHERE b.starts_at < $1 AND b.ends_at > $2
+ ORDER BY b.starts_at, b.id
+`
+
+type ListBookingsInRangeParams struct {
+	RangeEnd   time.Time
+	RangeStart time.Time
+}
+
+type ListBookingsInRangeRow struct {
+	ID           uuid.UUID
+	StaffID      uuid.UUID
+	ServiceID    uuid.UUID
+	CustomerName string
+	StartsAt     time.Time
+	EndsAt       time.Time
+	Status       string
+	ServiceName  string
+	StaffName    string
+}
+
+// The calendar and the booking list are one query per rendered range: the
+// interval test is half-open and uses the stored occupied end, so a booking
+// that starts before the range and still occupies it is included. Both names
+// come from the join, so a fifty-booking week costs one round trip, not fifty.
+func (q *Queries) ListBookingsInRange(ctx context.Context, arg ListBookingsInRangeParams) ([]ListBookingsInRangeRow, error) {
+	rows, err := q.db.Query(ctx, listBookingsInRange, arg.RangeEnd, arg.RangeStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBookingsInRangeRow{}
+	for rows.Next() {
+		var i ListBookingsInRangeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.StaffID,
+			&i.ServiceID,
+			&i.CustomerName,
+			&i.StartsAt,
+			&i.EndsAt,
+			&i.Status,
+			&i.ServiceName,
+			&i.StaffName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockActiveStaff = `-- name: LockActiveStaff :one
 SELECT 1 AS visible FROM staff WHERE id = $1 AND active FOR UPDATE
 `

@@ -1,0 +1,58 @@
+package views
+
+// Slots is the public list of bookable starts for one service over a local date
+// range: the form that resubmits the range and one booking form per start.
+templ Slots(page SlotsPage) {
+	@Layout() {
+		<h1>{ page.Tenant.Name }</h1>
+
+		<form method="get" action={ "/b/" + page.Tenant.Slug + "/slots" }>
+			<input type="hidden" name="service" value={ page.ServiceID.String() }/>
+			<p>
+				<label for="from">From</label>
+				<input id="from" name="from" type="date" value={ page.From } required/>
+			</p>
+			<p>
+				<label for="to">To</label>
+				<input id="to" name="to" type="date" value={ page.To }/>
+			</p>
+			<p><button type="submit">Show times</button></p>
+		</form>
+
+		<h2>Available times</h2>
+		if len(page.Slots) > 0 {
+			<table>
+				<thead>
+					<tr><th>Start</th><th>Staff</th><th>Book</th></tr>
+				</thead>
+				<tbody>
+					for _, slot := range page.Slots {
+						<tr>
+							<td>{ localTime(slot.StartsAt, page.Location) }</td>
+							<td>{ slot.StaffName }</td>
+							<td>
+								<form method="post" action={ "/b/" + page.Tenant.Slug + "/bookings" }>
+									<input type="hidden" name="service_id" value={ page.ServiceID.String() }/>
+									<input type="hidden" name="staff_id" value={ slot.StaffID.String() }/>
+									<input type="hidden" name="starts_at" value={ slot.StartsAt.Format("2006-01-02T15:04:05Z07:00") }/>
+									<input type="hidden" name="idempotency_key" value={ slot.IdempotencyKey }/>
+									<p>
+										<label for={ "name-" + slot.IdempotencyKey }>Name</label>
+										<input id={ "name-" + slot.IdempotencyKey } name="customer_name" type="text" required/>
+									</p>
+									<p>
+										<label for={ "email-" + slot.IdempotencyKey }>Email</label>
+										<input id={ "email-" + slot.IdempotencyKey } name="customer_email" type="email" required/>
+									</p>
+									<p><button type="submit">Book</button></p>
+								</form>
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		} else {
+			<p class="muted">No times are available in that range.</p>
+		}
+	}
+}

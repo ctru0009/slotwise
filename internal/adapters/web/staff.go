@@ -10,7 +10,7 @@ import (
 // createStaff adds a staff member from the dashboard form.
 func (s *server) createStaff(w http.ResponseWriter, r *http.Request, user domain.User) {
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	in := staffForm(r)
@@ -28,7 +28,7 @@ func (s *server) updateStaff(w http.ResponseWriter, r *http.Request, user domain
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	in := staffForm(r)
@@ -47,12 +47,12 @@ func (s *server) setStaffActive(w http.ResponseWriter, r *http.Request, user dom
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	active, err := parseActive(r)
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageActiveFlag)
+		fail(w, r, http.StatusBadRequest, messageActiveFlag)
 		return
 	}
 	if err := s.deps.Staff.SetActive(r.Context(), user, id, active); err != nil {

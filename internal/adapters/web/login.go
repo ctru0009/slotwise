@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ctru0009/slotwise/internal/adapters/web/views"
 	"github.com/ctru0009/slotwise/internal/app"
 	"github.com/ctru0009/slotwise/internal/domain"
 )
@@ -30,9 +31,9 @@ func (s *server) loginStart(w http.ResponseWriter, r *http.Request) {
 	slug := r.URL.Query().Get("slug")
 	switch {
 	case slug == "":
-		s.render(w, r, PageStart, StartPage{})
+		renderPage(r.Context(), w, views.Start(views.StartPage{}))
 	case !app.ValidSlug(slug):
-		s.render(w, r, PageStart, StartPage{Slug: slug, Error: messageBadSlug})
+		renderPage(r.Context(), w, views.Start(views.StartPage{Slug: slug, Error: messageBadSlug}))
 	default:
 		// PathEscape is a no-op for a slug that passed ValidSlug; it keeps
 		// the redirect target from ever carrying a scheme, an authority or a
@@ -47,10 +48,10 @@ func (s *server) tenantOr404(w http.ResponseWriter, r *http.Request) (domain.Ten
 	tenant, err := s.deps.Auth.TenantBySlug(r.Context(), r.PathValue("slug"))
 	switch {
 	case errors.Is(err, domain.ErrTenantNotFound):
-		s.deps.Views.fail(w, r, http.StatusNotFound, messageTenantGone)
+		fail(w, r, http.StatusNotFound, messageTenantGone)
 		return domain.Tenant{}, false
 	case err != nil:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 		return domain.Tenant{}, false
 	}
 	return tenant, true
@@ -66,7 +67,7 @@ func (s *server) loginForm(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("reset") == "1" {
 		notice = messageResetDone
 	}
-	s.render(w, r, PageLogin, LoginPage{Tenant: tenant, Notice: notice})
+	renderPage(r.Context(), w, views.Login(views.LoginPage{Tenant: tenant, Notice: notice}))
 }
 
 // loginSubmit signs a login in at POST /app/{slug}/login. A wrong password and
@@ -78,7 +79,7 @@ func (s *server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := parseForm(w, r); err != nil {
-		s.deps.Views.fail(w, r, http.StatusBadRequest, messageFormUnreadable)
+		fail(w, r, http.StatusBadRequest, messageFormUnreadable)
 		return
 	}
 	email := r.FormValue("email")
@@ -86,28 +87,27 @@ func (s *server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	// Allow records the attempt, so simultaneous guesses cannot all pass the
 	// check before any of them is counted.
 	if !s.deps.Login.Allow(key, s.deps.Clock.Now()) {
-		s.deps.Views.fail(w, r, http.StatusTooManyRequests, messageRateLimited)
+		fail(w, r, http.StatusTooManyRequests, messageRateLimited)
 		return
 	}
 	user, err := s.deps.Auth.Authenticate(r.Context(), tenant.ID, email, r.FormValue("password"))
 	switch {
 	case errors.Is(err, domain.ErrInvalidCredentials):
-		s.render(w, r, PageLogin, LoginPage{Tenant: tenant, Error: messageBadLogin})
+		renderPage(r.Context(), w, views.Login(views.LoginPage{Tenant: tenant, Error: messageBadLogin}))
 		return
 	case err != nil:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 		return
 	}
 	// Renew the token before storing the login, so a fixated session id cannot
 	// survive an authentication.
 	if err := s.deps.Sessions.RenewToken(r.Context()); err != nil {
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 		return
 	}
 	ctx := r.Context()
 	s.deps.Sessions.Put(ctx, sessionTenantID, tenant.ID.String())
 	s.deps.Sessions.Put(ctx, sessionUserID, user.ID.String())
-	s.deps.Sessions.Put(ctx, sessionTenantSlug, tenant.Slug)
 	// The session carries the hash it was created against, so changing the
 	// password retires every session that predates the change (withUser
 	// compares them).

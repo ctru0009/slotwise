@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -82,6 +83,34 @@ func (db *DB) DeadLetterJob(ctx context.Context, workerID string, job domain.Job
 			Reason:   pgtype.Text{String: reason, Valid: true},
 		})
 	})
+}
+
+// ListDeadJobs returns the tenant's dead-lettered jobs, newest first.
+func (db *DB) ListDeadJobs(ctx context.Context, tenantID uuid.UUID, limit int) ([]app.DeadJob, error) {
+	dead := []app.DeadJob{}
+	err := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := dbgen.New(tx).ListDeadJobs(ctx, narrowInt32(limit))
+		if err != nil {
+			return fmt.Errorf("listing dead jobs: %w", err)
+		}
+		for _, row := range rows {
+			job := app.DeadJob{
+				ID:       row.ID,
+				Kind:     domain.JobKind(row.Kind),
+				Attempts: int(row.Attempts),
+				DiedAt:   row.UpdatedAt,
+			}
+			if row.LastError.Valid {
+				job.LastError = row.LastError.String
+			}
+			dead = append(dead, job)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return dead, nil
 }
 
 // ReleaseJob hands an interrupted job back with its attempt refunded.

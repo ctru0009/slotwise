@@ -41,7 +41,7 @@ func (s *Services) Create(ctx context.Context, actor domain.User, in ServiceInpu
 	if err := in.validate(); err != nil {
 		return err
 	}
-	if err := s.store.CreateService(ctx, actor.TenantID, in); err != nil {
+	if err := s.store.CreateService(ctx, actor.TenantID, actor.ID, in); err != nil {
 		return fmt.Errorf("creating service: %w", err)
 	}
 	return nil
@@ -56,7 +56,7 @@ func (s *Services) Update(ctx context.Context, actor domain.User, id uuid.UUID, 
 	if err := in.validate(); err != nil {
 		return err
 	}
-	if err := s.store.UpdateService(ctx, actor.TenantID, id, in); err != nil {
+	if err := s.store.UpdateService(ctx, actor.TenantID, actor.ID, id, in); err != nil {
 		return fmt.Errorf("updating service: %w", err)
 	}
 	return nil
@@ -68,7 +68,7 @@ func (s *Services) SetActive(ctx context.Context, actor domain.User, id uuid.UUI
 	if err := requireOwner(actor); err != nil {
 		return err
 	}
-	if err := s.store.SetServiceActive(ctx, actor.TenantID, id, active); err != nil {
+	if err := s.store.SetServiceActive(ctx, actor.TenantID, actor.ID, id, active); err != nil {
 		return fmt.Errorf("setting service active: %w", err)
 	}
 	return nil

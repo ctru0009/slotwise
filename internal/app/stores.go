@@ -51,20 +51,24 @@ type ResetTokenStore interface {
 	ConsumeResetToken(ctx context.Context, tenantID uuid.UUID, tokenHash []byte, passwordHash string) (uuid.UUID, error)
 }
 
-// ServiceStore is the persistence the services use case needs.
+// ServiceStore is the persistence the services use case needs. The three write
+// methods take the acting login as well as the tenant, because each one records
+// an audit row in its own transaction and the actor is the only part of that
+// row the store cannot read off the row it just wrote.
 type ServiceStore interface {
 	ListServices(ctx context.Context, tenantID uuid.UUID) ([]domain.Service, error)
-	CreateService(ctx context.Context, tenantID uuid.UUID, in ServiceInput) error
-	UpdateService(ctx context.Context, tenantID, id uuid.UUID, in ServiceInput) error
-	SetServiceActive(ctx context.Context, tenantID, id uuid.UUID, active bool) error
+	CreateService(ctx context.Context, tenantID, actor uuid.UUID, in ServiceInput) error
+	UpdateService(ctx context.Context, tenantID, actor, id uuid.UUID, in ServiceInput) error
+	SetServiceActive(ctx context.Context, tenantID, actor, id uuid.UUID, active bool) error
 }
 
-// StaffStore is the persistence the staff use case needs.
+// StaffStore is the persistence the staff use case needs, with the same actor
+// threading as ServiceStore and for the same reason.
 type StaffStore interface {
 	ListStaff(ctx context.Context, tenantID uuid.UUID) ([]domain.Staff, error)
-	CreateStaff(ctx context.Context, tenantID uuid.UUID, in StaffInput) error
-	UpdateStaff(ctx context.Context, tenantID, id uuid.UUID, in StaffInput) error
-	SetStaffActive(ctx context.Context, tenantID, id uuid.UUID, active bool) error
+	CreateStaff(ctx context.Context, tenantID, actor uuid.UUID, in StaffInput) error
+	UpdateStaff(ctx context.Context, tenantID, actor, id uuid.UUID, in StaffInput) error
+	SetStaffActive(ctx context.Context, tenantID, actor, id uuid.UUID, active bool) error
 }
 
 // AvailabilityStore is the persistence the availability use case needs.
@@ -111,6 +115,20 @@ type BookingStore interface {
 	// CancelBooking marks the booking cancelled. Cancelling a cancelled
 	// booking succeeds; an unknown or invisible id reports domain.ErrNotFound.
 	CancelBooking(ctx context.Context, tenantID, id uuid.UUID) error
+	// ListBookingsInRange reads the bookings that occupy any part of
+	// [from, to) with their service and staff names, ordered by start, in one
+	// query per range; never nil.
+	ListBookingsInRange(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]BookingInRange, error)
+}
+
+// AuditStore is the read side of the audit trail. There is no insert method
+// here on purpose: a row is written by the store method whose change it
+// records, inside that change's own transaction, so nothing can record a change
+// that did not happen.
+type AuditStore interface {
+	// ListAuditLog returns the tenant's newest audit rows, at most limit of
+	// them, never nil.
+	ListAuditLog(ctx context.Context, tenantID uuid.UUID, limit int) ([]AuditEntry, error)
 }
 
 // JobStore is the queue as the worker drives it: claim one due job, then apply
@@ -141,6 +159,9 @@ type JobStore interface {
 	// unchanged and the claim's attempt refunded, which is what a graceful
 	// shutdown does.
 	ReleaseJob(ctx context.Context, workerID string, job domain.Job) (bool, error)
+	// ListDeadJobs returns the tenant's dead-lettered jobs newest first, at
+	// most limit of them; never nil.
+	ListDeadJobs(ctx context.Context, tenantID uuid.UUID, limit int) ([]DeadJob, error)
 }
 
 // Sender delivers outbound messages. Development and this milestone wire the

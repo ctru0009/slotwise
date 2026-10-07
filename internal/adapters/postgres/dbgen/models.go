@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AuditLog struct {
+	ID          uuid.UUID
+	TenantID    uuid.UUID
+	ActorUserID pgtype.UUID
+	Action      string
+	BookingID   pgtype.UUID
+	ServiceID   pgtype.UUID
+	StaffID     pgtype.UUID
+	CreatedAt   time.Time
+}
+
 type AvailabilityRule struct {
 	ID          uuid.UUID
 	TenantID    uuid.UUID

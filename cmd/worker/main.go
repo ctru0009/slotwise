@@ -53,7 +53,7 @@ func run() error {
 
 	// The same secret as cmd/web: the cancel links the mail carries must
 	// verify on the web server that serves them.
-	signer, err := app.NewCancelSigner(cfg.cancelSecret)
+	signer, err := app.NewSigner(cfg.cancelSecret)
 	if err != nil {
 		return fmt.Errorf("building the cancel signer: %w", err)
 	}

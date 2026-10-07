@@ -19,7 +19,7 @@ import (
 	"github.com/ctru0009/slotwise/internal/testsupport/pgtest"
 )
 
-// testCancelSecret is long enough for app.NewCancelSigner.
+// testCancelSecret is long enough for app.NewSigner.
 const testCancelSecret = "integration-cancel-secret-32-bytes-plus"
 
 // bookingFixture is one Berlin tenant whose staff member works Monday
@@ -43,7 +43,7 @@ func newBookingFixture(t *testing.T, slug string) bookingFixture {
 	pgtest.SeedWeeklyRule(t, owner, fixture, int(time.Monday), 9*60, 12*60)
 
 	db := pgtest.AppDB(t, appDSN)
-	signer, err := app.NewCancelSigner(testCancelSecret)
+	signer, err := app.NewSigner(testCancelSecret)
 	if err != nil {
 		t.Fatalf("building the signer: %v", err)
 	}

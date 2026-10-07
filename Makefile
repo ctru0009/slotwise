@@ -1,6 +1,11 @@
 .PHONY: generate fmt lint test test-int vuln check check-all
 generate:
 	go tool sqlc generate
+	go tool templ generate
+	# templ writes two import declarations where gofumpt wants one group, so
+	# formatting here keeps make generate and make fmt from undoing each other
+	# and lets CI's "generated code is committed" check pass after make check.
+	go tool gofumpt -w .
 fmt:
 	go tool gofumpt -w .
 lint:

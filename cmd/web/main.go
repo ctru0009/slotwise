@@ -220,11 +220,7 @@ func wire(ctx context.Context, cfg config, logger *slog.Logger) (*http.Server, f
 		return nil, nil, fmt.Errorf("purging expired sessions: %w", err)
 	}
 
-	views, err := web.LoadViews()
-	if err != nil {
-		return nil, nil, fmt.Errorf("loading views: %w", err)
-	}
-	signer, err := app.NewCancelSigner(cfg.cancelSecret)
+	signer, err := app.NewSigner(cfg.cancelSecret)
 	if err != nil {
 		return nil, nil, fmt.Errorf("building the cancel signer: %w", err)
 	}
@@ -243,7 +239,8 @@ func wire(ctx context.Context, cfg config, logger *slog.Logger) (*http.Server, f
 		Staff:         app.NewStaff(db),
 		Availability:  app.NewAvailability(db, db, clk),
 		Bookings:      app.NewBookings(db, db, db, clk, signer),
-		Views:         views,
+		Dashboard:     app.NewDashboard(db, db, db, db, db, db, clk),
+		Public:        app.NewPublic(db, db, clk),
 		Clock:         clk,
 		Login:         web.NewLimiter(loginLimit, loginWindow),
 		Reset:         web.NewLimiter(resetLimit, resetWindow),

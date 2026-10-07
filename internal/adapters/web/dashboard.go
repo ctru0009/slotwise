@@ -4,54 +4,83 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/ctru0009/slotwise/internal/adapters/web/views"
+	"github.com/ctru0009/slotwise/internal/app"
 	"github.com/ctru0009/slotwise/internal/domain"
 )
 
 // dashboard serves the authenticated overview at GET /app.
 func (s *server) dashboard(w http.ResponseWriter, r *http.Request, user domain.User) {
-	page, ok := s.dashboardPage(w, r, user)
+	overview, ok := s.overview(w, r, user)
 	if !ok {
 		return
 	}
-	s.render(w, r, PageDashboard, page)
+	renderPage(r.Context(), w, views.Dashboard(views.DashboardPage{Overview: overview, User: user}))
+}
+
+// calendar serves the day or week fragment the dashboard swaps in at GET
+// /app/calendar. It renders the component the full page embeds, so the two
+// cannot disagree about what a window holds.
+func (s *server) calendar(w http.ResponseWriter, r *http.Request, user domain.User) {
+	overview, ok := s.overview(w, r, user)
+	if !ok {
+		return
+	}
+	renderPage(r.Context(), w, views.Calendar(overview))
 }
 
 // renderDashboard re-renders the dashboard with an error message and status
 // 200, so a rejected write keeps the form's context instead of redirecting.
 func (s *server) renderDashboard(w http.ResponseWriter, r *http.Request, user domain.User, errText string) {
-	page, ok := s.dashboardPage(w, r, user)
+	overview, ok := s.overview(w, r, user)
 	if !ok {
 		return
 	}
-	page.Error = errText
-	s.render(w, r, PageDashboard, page)
+	page := views.DashboardPage{Overview: overview, User: user, Error: errText}
+	renderPage(r.Context(), w, views.Dashboard(page))
 }
 
-// dashboardPage loads the business named by the session plus the actor's
-// services and staff. It renders the failure itself and reports whether the
-// caller should continue.
-func (s *server) dashboardPage(w http.ResponseWriter, r *http.Request, user domain.User) (DashboardPage, bool) {
-	ctx := r.Context()
-	tenant, err := s.deps.Auth.TenantBySlug(ctx, s.deps.Sessions.GetString(ctx, sessionTenantSlug))
-	switch {
-	case errors.Is(err, domain.ErrTenantNotFound):
-		s.deps.Views.fail(w, r, http.StatusNotFound, messageTenantGone)
-		return DashboardPage{}, false
-	case err != nil:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
-		return DashboardPage{}, false
+// overview loads the window the request names. It renders the failure itself
+// and reports whether the caller should continue.
+func (s *server) overview(w http.ResponseWriter, r *http.Request, user domain.User) (app.Overview, bool) {
+	mode, anchor, ok := calendarRequest(w, r)
+	if !ok {
+		return app.Overview{}, false
 	}
-	services, err := s.deps.Services.List(ctx, user)
+	overview, err := s.deps.Dashboard.Load(r.Context(), user, mode, anchor)
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
-		return DashboardPage{}, false
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			fail(w, r, http.StatusNotFound, messageTenantGone)
+		case errors.Is(err, domain.ErrInvalidInput):
+			fail(w, r, http.StatusBadRequest, validationMessage(err))
+		default:
+			fail(w, r, http.StatusInternalServerError, messageServerError)
+		}
+		return app.Overview{}, false
 	}
-	staff, err := s.deps.Staff.List(ctx, user)
+	return overview, true
+}
+
+// calendarRequest reads the window a calendar request names: the view mode and
+// the local date it is anchored on. A request that names no date gets the
+// window holding today.
+func calendarRequest(w http.ResponseWriter, r *http.Request) (app.CalendarMode, *domain.LocalDate, bool) {
+	mode, err := app.ParseCalendarMode(r.URL.Query().Get("mode"))
 	if err != nil {
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
-		return DashboardPage{}, false
+		fail(w, r, http.StatusBadRequest, validationMessage(err))
+		return "", nil, false
 	}
-	return DashboardPage{Tenant: tenant, User: user, Services: services, Staff: staff}, true
+	raw := r.URL.Query().Get("anchor")
+	if raw == "" {
+		return mode, nil, true
+	}
+	anchor, err := domain.ParseLocalDate(raw)
+	if err != nil {
+		fail(w, r, http.StatusBadRequest, validationMessage(err))
+		return "", nil, false
+	}
+	return mode, &anchor, true
 }
 
 // writeFailure renders the outcome of a failed dashboard write: a validation
@@ -62,11 +91,11 @@ func (s *server) writeFailure(w http.ResponseWriter, r *http.Request, user domai
 	case errors.Is(err, domain.ErrInvalidInput):
 		s.renderDashboard(w, r, user, validationMessage(err))
 	case errors.Is(err, domain.ErrNotFound):
-		s.deps.Views.fail(w, r, http.StatusNotFound, messageNoRecord)
+		fail(w, r, http.StatusNotFound, messageNoRecord)
 	case errors.Is(err, domain.ErrForbidden):
-		s.deps.Views.fail(w, r, http.StatusForbidden, messageForbidden)
+		fail(w, r, http.StatusForbidden, messageForbidden)
 	default:
-		s.deps.Views.fail(w, r, http.StatusInternalServerError, messageServerError)
+		fail(w, r, http.StatusInternalServerError, messageServerError)
 	}
 }
 

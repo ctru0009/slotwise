@@ -1,0 +1,31 @@
+package views
+
+// Booking is the page for one booking: its details on the tenant's clock, the
+// form that cancels it with the token from the signed link, and the link that
+// downloads its calendar file.
+templ Booking(page BookingPage) {
+	@Layout() {
+		<h1>{ page.Tenant.Name }</h1>
+		<h2>Your booking</h2>
+		<table>
+			<tbody>
+				<tr><th>Name</th><td>{ page.Booking.CustomerName }</td></tr>
+				<tr><th>Email</th><td>{ page.Booking.CustomerEmail }</td></tr>
+				<tr><th>Starts</th><td>{ localTime(page.Booking.StartsAt, page.Location) }</td></tr>
+				<tr><th>Ends</th><td>{ localTime(page.Booking.EndsAt, page.Location) }</td></tr>
+				<tr><th>Status</th><td>{ page.Booking.Status }</td></tr>
+			</tbody>
+		</table>
+		if page.Booking.Status == "cancelled" {
+			<p class="notice">This booking is cancelled.</p>
+		} else {
+			<form method="post" action={ cancelPath(page.Tenant.Slug, page.Booking.ID.String()) }>
+				<input type="hidden" name="token" value={ page.Token }/>
+				<p><button type="submit">Cancel this booking</button></p>
+			</form>
+			<p>
+				<a href={ calendarPath(page.Tenant.Slug, page.Booking.ID.String(), page.CalendarToken) }>Download calendar file (.ics)</a>
+			</p>
+		}
+	}
+}

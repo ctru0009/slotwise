@@ -48,13 +48,13 @@ type Bookings struct {
 	avail   AvailabilityStore
 	tenants TenantStore
 	clock   clock.Clock
-	signer  *CancelSigner
+	signer  *Signer
 }
 
 // NewBookings returns a Bookings backed by store, validating against avail,
 // resolving tenant timezones through tenants, reading the current instant from
 // clk and signing cancel links with signer.
-func NewBookings(store BookingStore, avail AvailabilityStore, tenants TenantStore, clk clock.Clock, signer *CancelSigner) *Bookings {
+func NewBookings(store BookingStore, avail AvailabilityStore, tenants TenantStore, clk clock.Clock, signer *Signer) *Bookings {
 	return &Bookings{store: store, avail: avail, tenants: tenants, clock: clk, signer: signer}
 }
 
@@ -138,7 +138,7 @@ func (b *Bookings) resolveVeto(ctx context.Context, tenantID uuid.UUID, in Booki
 // authorise this booking is domain.ErrForbidden before the store is read, so a
 // guessed id cannot probe which bookings exist.
 func (b *Bookings) Get(ctx context.Context, tenantID, id uuid.UUID, token string) (domain.Booking, error) {
-	if !b.signer.Verify(id, token) {
+	if !b.signer.Verify(PurposeCancel, id, token) {
 		return domain.Booking{}, domain.ErrForbidden
 	}
 	booking, err := b.store.BookingByID(ctx, tenantID, id)
@@ -151,7 +151,7 @@ func (b *Bookings) Get(ctx context.Context, tenantID, id uuid.UUID, token string
 // Cancel cancels the booking a signed cancel link names. Cancelling twice
 // succeeds: the second call finds the booking already cancelled.
 func (b *Bookings) Cancel(ctx context.Context, tenantID, id uuid.UUID, token string) error {
-	if !b.signer.Verify(id, token) {
+	if !b.signer.Verify(PurposeCancel, id, token) {
 		return domain.ErrForbidden
 	}
 	if err := b.store.CancelBooking(ctx, tenantID, id); err != nil {
@@ -162,7 +162,28 @@ func (b *Bookings) Cancel(ctx context.Context, tenantID, id uuid.UUID, token str
 
 // CancelToken returns the token that authorises cancelling the booking with id.
 func (b *Bookings) CancelToken(id uuid.UUID) string {
-	return b.signer.Token(id)
+	return b.signer.Token(PurposeCancel, id)
+}
+
+// CalendarToken returns the token that authorises downloading the booking's
+// calendar file. It is a different purpose, so a cancel link cannot fetch one.
+func (b *Bookings) CalendarToken(id uuid.UUID) string {
+	return b.signer.Token(PurposeCalendar, id)
+}
+
+// Calendar returns the booking a signed calendar link names, with the names the
+// calendar file mentions. A token minted for another purpose, or for another
+// booking, is domain.ErrForbidden before the store is read, so a guessed id
+// cannot probe which bookings exist.
+func (b *Bookings) Calendar(ctx context.Context, tenantID, id uuid.UUID, token string) (BookingMessage, error) {
+	if !b.signer.Verify(PurposeCalendar, id, token) {
+		return BookingMessage{}, domain.ErrForbidden
+	}
+	message, err := b.store.BookingMessage(ctx, tenantID, id)
+	if err != nil {
+		return BookingMessage{}, fmt.Errorf("reading the booking a calendar link names: %w", err)
+	}
+	return message, nil
 }
 
 // validate normalises in in place and reports the first booking field that is

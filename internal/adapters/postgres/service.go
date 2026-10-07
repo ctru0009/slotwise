@@ -40,10 +40,12 @@ func (db *DB) ListServices(ctx context.Context, tenantID uuid.UUID) ([]domain.Se
 	return services, nil
 }
 
-// CreateService inserts a validated service into the tenant.
-func (db *DB) CreateService(ctx context.Context, tenantID uuid.UUID, in app.ServiceInput) error {
+// CreateService inserts a validated service into the tenant and records who
+// added it, in one transaction.
+func (db *DB) CreateService(ctx context.Context, tenantID, actor uuid.UUID, in app.ServiceInput) error {
 	return db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := dbgen.New(tx).InsertService(ctx, dbgen.InsertServiceParams{
+		q := dbgen.New(tx)
+		id, err := q.InsertService(ctx, dbgen.InsertServiceParams{
 			TenantID:        tenantID,
 			Name:            in.Name,
 			DurationMinutes: narrowInt32(in.DurationMinutes),
@@ -53,16 +55,17 @@ func (db *DB) CreateService(ctx context.Context, tenantID uuid.UUID, in app.Serv
 		if err != nil {
 			return fmt.Errorf("inserting service: %w", err)
 		}
-		return nil
+		return recordAudit(ctx, q, tenantID, actor, domain.AuditServiceCreated, auditSubject{service: id})
 	})
 }
 
 // UpdateService replaces a service's mutable fields. An id that does not exist,
 // including another tenant's row, reports domain.ErrNotFound: row level
 // security makes the two indistinguishable, and callers render both as 404.
-func (db *DB) UpdateService(ctx context.Context, tenantID, id uuid.UUID, in app.ServiceInput) error {
+func (db *DB) UpdateService(ctx context.Context, tenantID, actor, id uuid.UUID, in app.ServiceInput) error {
 	return db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		affected, err := dbgen.New(tx).UpdateService(ctx, dbgen.UpdateServiceParams{
+		q := dbgen.New(tx)
+		affected, err := q.UpdateService(ctx, dbgen.UpdateServiceParams{
 			Name:            in.Name,
 			DurationMinutes: narrowInt32(in.DurationMinutes),
 			BufferMinutes:   narrowInt32(in.BufferMinutes),
@@ -75,16 +78,17 @@ func (db *DB) UpdateService(ctx context.Context, tenantID, id uuid.UUID, in app.
 		if affected == 0 {
 			return fmt.Errorf("service %s: %w", id, domain.ErrNotFound)
 		}
-		return nil
+		return recordAudit(ctx, q, tenantID, actor, domain.AuditServiceUpdated, auditSubject{service: id})
 	})
 }
 
 // SetServiceActive hides or unhides a service without deleting it, so bookings
 // that reference it keep their history. A row the tenant cannot see reports
 // domain.ErrNotFound, the same as UpdateService.
-func (db *DB) SetServiceActive(ctx context.Context, tenantID, id uuid.UUID, active bool) error {
+func (db *DB) SetServiceActive(ctx context.Context, tenantID, actor, id uuid.UUID, active bool) error {
 	return db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		affected, err := dbgen.New(tx).SetServiceActive(ctx, dbgen.SetServiceActiveParams{
+		q := dbgen.New(tx)
+		affected, err := q.SetServiceActive(ctx, dbgen.SetServiceActiveParams{
 			Active: active,
 			ID:     id,
 		})
@@ -94,16 +98,25 @@ func (db *DB) SetServiceActive(ctx context.Context, tenantID, id uuid.UUID, acti
 		if affected == 0 {
 			return fmt.Errorf("service %s: %w", id, domain.ErrNotFound)
 		}
-		return nil
+		return recordAudit(ctx, q, tenantID, actor, activeAction(active, domain.AuditServiceActivated, domain.AuditServiceDeactivated), auditSubject{service: id})
 	})
+}
+
+// activeAction names the change an activation made. Activating an already
+// active row still records the request, the same way a repeat cancel does.
+func activeAction(active bool, on, off domain.AuditAction) domain.AuditAction {
+	if active {
+		return on
+	}
+	return off
 }
 
 var _ app.ServiceStore = (*DB)(nil)
 
 // narrowInt32 fits a validated input field into its column type. The app layer
-// validates duration to 1..1440, buffer to 0..240 and price to 0..10_000_000,
-// so every value that reaches this adapter is far inside int32 and the
-// narrowing cannot overflow.
+// validates duration to 1..1440, buffer to 0..240 and price to 0..10_000_000 and
+// caps the dashboard's list limits at a few dozen, so every value that reaches
+// this adapter is far inside int32 and the narrowing cannot overflow.
 func narrowInt32(v int) int32 {
 	return int32(v) //nolint:gosec // the app layer's ranges cannot overflow int32
 }

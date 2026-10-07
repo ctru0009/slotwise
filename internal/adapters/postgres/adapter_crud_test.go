@@ -29,9 +29,12 @@ func TestAdapterCRUD(t *testing.T) {
 	tenantA := pgtest.Seed(t, owner, "a")
 	tenantB := pgtest.Seed(t, owner, "b")
 	db := pgtest.AppDB(t, appDSN)
+	// Every catalogue write records the login that made it, so the adapter
+	// tests act as a seeded owner the same way a session would.
+	actorA := pgtest.SeedUser(t, owner, tenantA, "crud-owner-a@example.com", "hash-a", "owner")
 
-	assertServiceStore(t, db, owner, tenantA, tenantB)
-	assertStaffStore(t, db, owner, tenantA, tenantB)
+	assertServiceStore(t, db, owner, tenantA, tenantB, actorA)
+	assertStaffStore(t, db, owner, tenantA, tenantB, actorA)
 	assertUserStore(t, db, tenantA, tenantB)
 	assertResetTokenStore(t, db, owner, tenantA)
 	assertTenantInsert(t, db)
@@ -71,19 +74,19 @@ func assertTenantInsert(t *testing.T, db *postgres.DB) {
 	}
 }
 
-func assertServiceStore(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture) {
+func assertServiceStore(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture, actor uuid.UUID) {
 	t.Helper()
-	created := createService(t, db, tenantA)
-	updateService(t, db, tenantA, created)
-	deactivateService(t, db, owner, tenantA, created)
-	assertServiceMisses(t, db, owner, tenantA, tenantB)
+	created := createService(t, db, tenantA, actor)
+	updateService(t, db, tenantA, created, actor)
+	deactivateService(t, db, owner, tenantA, created, actor)
+	assertServiceMisses(t, db, owner, tenantA, tenantB, actor)
 }
 
-func createService(t *testing.T, db *postgres.DB, tenant pgtest.Fixture) domain.Service {
+func createService(t *testing.T, db *postgres.DB, tenant pgtest.Fixture, actor uuid.UUID) domain.Service {
 	t.Helper()
 
 	in := app.ServiceInput{Name: "Massage", DurationMinutes: 60, BufferMinutes: 15, PriceCents: 9900}
-	if err := db.CreateService(t.Context(), tenant.Tenant, in); err != nil {
+	if err := db.CreateService(t.Context(), tenant.Tenant, actor, in); err != nil {
 		t.Fatalf("creating service: %v", err)
 	}
 	created := findService(t, db, tenant.Tenant, "Massage")
@@ -99,11 +102,11 @@ func createService(t *testing.T, db *postgres.DB, tenant pgtest.Fixture) domain.
 	return created
 }
 
-func updateService(t *testing.T, db *postgres.DB, tenant pgtest.Fixture, created domain.Service) {
+func updateService(t *testing.T, db *postgres.DB, tenant pgtest.Fixture, created domain.Service, actor uuid.UUID) {
 	t.Helper()
 
 	update := app.ServiceInput{Name: "Deep Tissue", DurationMinutes: 90, PriceCents: 12000}
-	if err := db.UpdateService(t.Context(), tenant.Tenant, created.ID, update); err != nil {
+	if err := db.UpdateService(t.Context(), tenant.Tenant, actor, created.ID, update); err != nil {
 		t.Fatalf("updating service: %v", err)
 	}
 	updated := findService(t, db, tenant.Tenant, "Deep Tissue")
@@ -115,10 +118,10 @@ func updateService(t *testing.T, db *postgres.DB, tenant pgtest.Fixture, created
 	}
 }
 
-func deactivateService(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenant pgtest.Fixture, created domain.Service) {
+func deactivateService(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenant pgtest.Fixture, created domain.Service, actor uuid.UUID) {
 	t.Helper()
 
-	if err := db.SetServiceActive(t.Context(), tenant.Tenant, created.ID, false); err != nil {
+	if err := db.SetServiceActive(t.Context(), tenant.Tenant, actor, created.ID, false); err != nil {
 		t.Fatalf("deactivating service: %v", err)
 	}
 	if deactivated := findService(t, db, tenant.Tenant, "Deep Tissue"); deactivated.Active {
@@ -127,14 +130,14 @@ func deactivateService(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenan
 	assertServiceRow(t, owner, tenant.Tenant, created.ID, "Deep Tissue", false)
 }
 
-func assertServiceMisses(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture) {
+func assertServiceMisses(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture, actor uuid.UUID) {
 	t.Helper()
 
 	for _, id := range []uuid.UUID{tenantB.Service, uuid.New()} {
-		if err := db.UpdateService(t.Context(), tenantA.Tenant, id, app.ServiceInput{Name: "Hijack", DurationMinutes: 5, PriceCents: 1}); !errors.Is(err, domain.ErrNotFound) {
+		if err := db.UpdateService(t.Context(), tenantA.Tenant, actor, id, app.ServiceInput{Name: "Hijack", DurationMinutes: 5, PriceCents: 1}); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("UpdateService(%s) = %v, want domain.ErrNotFound", id, err)
 		}
-		if err := db.SetServiceActive(t.Context(), tenantA.Tenant, id, false); !errors.Is(err, domain.ErrNotFound) {
+		if err := db.SetServiceActive(t.Context(), tenantA.Tenant, actor, id, false); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("SetServiceActive(%s) = %v, want domain.ErrNotFound", id, err)
 		}
 	}
@@ -159,19 +162,19 @@ func assertServiceListIsScoped(t *testing.T, db *postgres.DB, tenantA, tenantB p
 	}
 }
 
-func assertStaffStore(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture) {
+func assertStaffStore(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture, actor uuid.UUID) {
 	t.Helper()
-	created := createStaff(t, db, tenantA)
-	updateStaff(t, db, tenantA, created)
-	deactivateStaff(t, db, owner, tenantA, created)
-	assertStaffMisses(t, db, owner, tenantA, tenantB)
+	created := createStaff(t, db, tenantA, actor)
+	updateStaff(t, db, tenantA, created, actor)
+	deactivateStaff(t, db, owner, tenantA, created, actor)
+	assertStaffMisses(t, db, owner, tenantA, tenantB, actor)
 }
 
-func createStaff(t *testing.T, db *postgres.DB, tenant pgtest.Fixture) domain.Staff {
+func createStaff(t *testing.T, db *postgres.DB, tenant pgtest.Fixture, actor uuid.UUID) domain.Staff {
 	t.Helper()
 
 	in := app.StaffInput{Name: "Ada", Email: "ada@example.com"}
-	if err := db.CreateStaff(t.Context(), tenant.Tenant, in); err != nil {
+	if err := db.CreateStaff(t.Context(), tenant.Tenant, actor, in); err != nil {
 		t.Fatalf("creating staff: %v", err)
 	}
 	created := findStaff(t, db, tenant.Tenant, "Ada")
@@ -184,11 +187,11 @@ func createStaff(t *testing.T, db *postgres.DB, tenant pgtest.Fixture) domain.St
 	return created
 }
 
-func updateStaff(t *testing.T, db *postgres.DB, tenant pgtest.Fixture, created domain.Staff) {
+func updateStaff(t *testing.T, db *postgres.DB, tenant pgtest.Fixture, created domain.Staff, actor uuid.UUID) {
 	t.Helper()
 
 	update := app.StaffInput{Name: "Ada Lovelace", Email: "ada.lovelace@example.com"}
-	if err := db.UpdateStaff(t.Context(), tenant.Tenant, created.ID, update); err != nil {
+	if err := db.UpdateStaff(t.Context(), tenant.Tenant, actor, created.ID, update); err != nil {
 		t.Fatalf("updating staff: %v", err)
 	}
 	updated := findStaff(t, db, tenant.Tenant, "Ada Lovelace")
@@ -197,10 +200,10 @@ func updateStaff(t *testing.T, db *postgres.DB, tenant pgtest.Fixture, created d
 	}
 }
 
-func deactivateStaff(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenant pgtest.Fixture, created domain.Staff) {
+func deactivateStaff(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenant pgtest.Fixture, created domain.Staff, actor uuid.UUID) {
 	t.Helper()
 
-	if err := db.SetStaffActive(t.Context(), tenant.Tenant, created.ID, false); err != nil {
+	if err := db.SetStaffActive(t.Context(), tenant.Tenant, actor, created.ID, false); err != nil {
 		t.Fatalf("deactivating staff: %v", err)
 	}
 	if deactivated := findStaff(t, db, tenant.Tenant, "Ada Lovelace"); deactivated.Active {
@@ -209,14 +212,14 @@ func deactivateStaff(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenant 
 	assertStaffRow(t, owner, tenant.Tenant, created.ID, "Ada Lovelace", false)
 }
 
-func assertStaffMisses(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture) {
+func assertStaffMisses(t *testing.T, db *postgres.DB, owner *pgxpool.Pool, tenantA, tenantB pgtest.Fixture, actor uuid.UUID) {
 	t.Helper()
 
 	for _, id := range []uuid.UUID{tenantB.Staff, uuid.New()} {
-		if err := db.UpdateStaff(t.Context(), tenantA.Tenant, id, app.StaffInput{Name: "Hijack", Email: "hijack@example.com"}); !errors.Is(err, domain.ErrNotFound) {
+		if err := db.UpdateStaff(t.Context(), tenantA.Tenant, actor, id, app.StaffInput{Name: "Hijack", Email: "hijack@example.com"}); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("UpdateStaff(%s) = %v, want domain.ErrNotFound", id, err)
 		}
-		if err := db.SetStaffActive(t.Context(), tenantA.Tenant, id, false); !errors.Is(err, domain.ErrNotFound) {
+		if err := db.SetStaffActive(t.Context(), tenantA.Tenant, actor, id, false); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("SetStaffActive(%s) = %v, want domain.ErrNotFound", id, err)
 		}
 	}

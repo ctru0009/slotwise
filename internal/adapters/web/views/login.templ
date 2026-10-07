@@ -1,0 +1,27 @@
+package views
+
+// Login is the sign-in page for one tenant, with the reset notice and the
+// sign-in error above the form.
+templ Login(page LoginPage) {
+	@Layout() {
+		<h1>Sign in to { page.Tenant.Name }</h1>
+		if page.Notice != "" {
+			<p class="notice">{ page.Notice }</p>
+		}
+		if page.Error != "" {
+			<p class="error">{ page.Error }</p>
+		}
+		<form method="post" action={ "/app/" + page.Tenant.Slug + "/login" }>
+			<p>
+				<label for="email">Email</label>
+				<input id="email" name="email" type="email" autocomplete="username" required/>
+			</p>
+			<p>
+				<label for="password">Password</label>
+				<input id="password" name="password" type="password" autocomplete="current-password" required/>
+			</p>
+			<p><button type="submit">Sign in</button></p>
+		</form>
+		<p><a href={ "/app/" + page.Tenant.Slug + "/forgot" }>Forgot your password?</a></p>
+	}
+}

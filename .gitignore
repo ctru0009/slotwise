@@ -10,3 +10,4 @@ coverage.out
 # Local environment
 .env
 .env.*
+.audit/
