@@ -117,10 +117,12 @@ type BookingStore interface {
 // the transition its outcome asks for. The booking path enqueues inside its own
 // transaction and never claims.
 //
-// Every transition is guarded by the lease the caller was given. A false bool
-// means the lease moved on, either because another worker reclaimed the job or
-// because this worker's lease expired while it was running; the caller logs it
-// and moves on rather than treating it as an error.
+// Every transition is guarded by the claim that produced the job: the worker id
+// and the attempt count together are a fencing token, so a stale claim whose
+// lease expired and was reclaimed writes nothing. A false bool means the claim
+// moved on, either because another worker reclaimed the job or because this
+// worker's lease expired while it was running; the caller logs it and moves on
+// rather than treating it as an error.
 type JobStore interface {
 	// ClaimJob leases the next due job to workerID until claimTime plus
 	// leaseSeconds, and reports it with Attempts already incremented.

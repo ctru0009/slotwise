@@ -19,7 +19,8 @@ store methods. M6 (UI) next.
 ## Notes
 - M3 and M4 carry the real risk (time zones, concurrency), so the tests are the deliverable.
 - M5: the confirmation and reminder jobs are inserted inside the booking's transaction, so
-  a committed booking always has its job; never move the enqueue out of that transaction.
+  a booking committed through this write path always has its job (rows written before 0006
+  are out of scope and get no backfill); never move the enqueue out of that transaction.
   Scheduling fields (`run_at`, `locked_until`) are written from the injected clock and
   compared to a claim-time parameter, never to the database's `now()`, which stays the
   source for audit columns only. The claim is `job_claim`, a `SECURITY DEFINER` function —

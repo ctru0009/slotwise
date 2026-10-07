@@ -5,6 +5,7 @@ package worker_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ type retryFixture struct {
 	owner   *pgxpool.Pool
 	db      *postgres.DB
 	clock   *clock.Fake
+	fixture pgtest.Fixture
 	tenant  uuid.UUID
 	booking uuid.UUID
 }
@@ -39,6 +41,7 @@ func newRetryFixture(t *testing.T, slug string) retryFixture {
 		owner:   owner,
 		db:      pgtest.AppDB(t, appDSN),
 		clock:   clock.NewFake(time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)),
+		fixture: fixture,
 		tenant:  fixture.Tenant,
 		booking: booking,
 	}
@@ -269,6 +272,82 @@ func TestWorkerShutdownReleasesTheInFlightJob(t *testing.T) {
 	}
 	if !state.runAt.Equal(seed.runAt) {
 		t.Errorf("released run_at = %v, want its due time %v unchanged", state.runAt, seed.runAt)
+	}
+}
+
+// countingSender records how many messages were delivered.
+type countingSender struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *countingSender) Send(context.Context, domain.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	return nil
+}
+
+func (s *countingSender) delivered() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// TestTwoWorkersClaimDisjointJobs runs two live worker loops over one queue:
+// SKIP LOCKED hands each due job to exactly one of them, every job is
+// delivered, and no row is claimed twice.
+func TestTwoWorkersClaimDisjointJobs(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	f := newRetryFixture(t, "two-workers")
+
+	const jobs = 10
+	starts := []string{
+		"2026-11-03T09:00:00Z", "2026-11-04T09:00:00Z", "2026-11-05T09:00:00Z",
+		"2026-11-06T09:00:00Z", "2026-11-07T09:00:00Z", "2026-11-08T09:00:00Z",
+		"2026-11-09T09:00:00Z", "2026-11-10T09:00:00Z", "2026-11-11T09:00:00Z",
+		"2026-11-12T09:00:00Z",
+	}
+	for _, startsAt := range starts {
+		booking := pgtest.SeedBooking(t, f.owner, f.fixture, startsAt)
+		pgtest.SeedJob(t, f.owner, f.tenant, booking, "booking_confirmation", f.clock.Now().Add(-time.Second))
+	}
+
+	sender := &countingSender{}
+	stopFirst := runUntil(t, newTestWorker(t, f.clock, "worker-1", f.db, sender))
+	stopSecond := runUntil(t, newTestWorker(t, f.clock, "worker-2", f.db, sender))
+	waitForDeliveries(t, sender, jobs)
+	stopFirst()
+	stopSecond()
+
+	var done, doubleClaimed int
+	err := f.owner.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status = 'done'),
+		       count(*) FILTER (WHERE attempts > 1)
+		  FROM jobs WHERE tenant_id = $1`, f.tenant).Scan(&done, &doubleClaimed)
+	if err != nil {
+		t.Fatalf("reading the queue: %v", err)
+	}
+	if done != jobs {
+		t.Errorf("%d jobs done, want %d", done, jobs)
+	}
+	if doubleClaimed != 0 {
+		t.Errorf("%d jobs were claimed twice", doubleClaimed)
+	}
+	if got := sender.delivered(); got != jobs {
+		t.Errorf("%d deliveries, want %d", got, jobs)
+	}
+}
+
+func waitForDeliveries(t *testing.T, sender *countingSender, want int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for sender.delivered() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d deliveries after 15s, want %d", sender.delivered(), want)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

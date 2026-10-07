@@ -277,6 +277,127 @@ func claimWithin(ctx context.Context, t *testing.T, db *postgres.DB, worker stri
 	}
 }
 
+// TestClaimJobUsesThePassedClaimTime pins the one scheduling authority: the
+// claim's ready predicate compares run_at against the claim_time argument, not
+// against the database's now(). A job seeded 72 hours into the real future is
+// invisible to a claim "now" and due the moment claim_time reaches it, which a
+// predicate over the database clock could not do.
+func TestClaimJobUsesThePassedClaimTime(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	appDSN, ownerDSN := pgtest.Start(t)
+	owner := pgtest.Owner(t, ownerDSN)
+	fixture := pgtest.Seed(t, owner, "claim-clock")
+	db := pgtest.AppDB(t, appDSN)
+	booking := pgtest.SeedBooking(t, owner, fixture, "2026-11-02T09:00:00Z")
+
+	runAt := time.Now().Add(72 * time.Hour).UTC()
+	job := pgtest.SeedJob(t, owner, fixture.Tenant, booking, "booking_confirmation", runAt)
+
+	if _, err := db.ClaimJob(ctx, "clock-worker", time.Now().Add(-time.Minute), 60); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("claiming before run_at = %v, want domain.ErrNotFound", err)
+	}
+
+	claimed, err := db.ClaimJob(ctx, "clock-worker", runAt.Add(time.Second), 60)
+	if err != nil {
+		t.Fatalf("ClaimJob once claim_time reaches run_at: %v", err)
+	}
+	if claimed.ID != job {
+		t.Errorf("claimed %s, want %s", claimed.ID, job)
+	}
+	assertJobLease(ctx, t, owner, job, "clock-worker", runAt.Add(time.Minute+time.Second), 1)
+}
+
+// TestStaleTransitionsFromAReclaimedLeaseAreRefused pins the fencing token: a
+// claim whose lease expired and was reclaimed must not be able to write, even
+// when the reclaimer carries the same worker id. The attempt count is what
+// separates the two claims; without it a stale CompleteJob marks a row done
+// while the live claimant is still inside its handler.
+func TestStaleTransitionsFromAReclaimedLeaseAreRefused(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	appDSN, ownerDSN := pgtest.Start(t)
+	owner := pgtest.Owner(t, ownerDSN)
+	fixture := pgtest.Seed(t, owner, "stale")
+	db := pgtest.AppDB(t, appDSN)
+
+	starts := []string{
+		"2026-11-02T09:00:00Z",
+		"2026-11-03T09:00:00Z",
+		"2026-11-04T09:00:00Z",
+		"2026-11-05T09:00:00Z",
+	}
+	for i, name := range []string{"complete", "retry", "dead-letter", "release"} {
+		booking := pgtest.SeedBooking(t, owner, fixture, starts[i])
+		jobID := pgtest.SeedJob(t, owner, fixture.Tenant, booking, "booking_confirmation", staleClaimAt())
+		assertStaleClaimIsRefused(ctx, t, db, owner, name, jobID)
+	}
+}
+
+// staleClaimAt is when the tests' first claims happen.
+func staleClaimAt() time.Time {
+	return time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+}
+
+// assertStaleClaimIsRefused claims a job twice under the same worker id: the
+// second claim reclaims the first's expired lease, so the first's guarded write
+// must be refused and the second's must apply.
+func assertStaleClaimIsRefused(ctx context.Context, t *testing.T, db *postgres.DB, owner *pgxpool.Pool, name string, jobID uuid.UUID) {
+	t.Helper()
+	first, second := reclaimedTwice(ctx, t, db, name, jobID)
+
+	applied, err := applyTransition(ctx, db, name, "recycled", first)
+	if err != nil || applied {
+		t.Errorf("%s of a stale claim = %v, %v, want false, nil", name, applied, err)
+	}
+	row := readJobByID(ctx, t, owner, first.ID)
+	if row.status != "running" || row.attempts != 2 || row.lockedBy != "recycled" {
+		t.Errorf("%s: job after the stale write = %+v, want running attempts=2 held by the reclaim", name, row)
+	}
+
+	applied, err = applyTransition(ctx, db, name, "recycled", second)
+	if err != nil || !applied {
+		t.Errorf("%s of the live claim = %v, %v, want true, nil", name, applied, err)
+	}
+}
+
+// reclaimedTwice claims a job at t0 and reclaims it once the first lease has
+// expired, both times under the same worker id, and returns both claims.
+func reclaimedTwice(ctx context.Context, t *testing.T, db *postgres.DB, name string, jobID uuid.UUID) (first, second domain.Job) {
+	t.Helper()
+	t0 := staleClaimAt()
+
+	first, err := db.ClaimJob(ctx, "recycled", t0, 60)
+	if err != nil {
+		t.Fatalf("%s: first claim: %v", name, err)
+	}
+	if first.ID != jobID {
+		t.Fatalf("%s: first claim returned %s, want the seeded job %s", name, first.ID, jobID)
+	}
+	second, err = db.ClaimJob(ctx, "recycled", t0.Add(61*time.Second), 60)
+	if err != nil {
+		t.Fatalf("%s: reclaim: %v", name, err)
+	}
+	if second.ID != first.ID || second.Attempts != 2 {
+		t.Fatalf("%s: reclaim = %s attempts=%d, want %s attempts=2", name, second.ID, second.Attempts, first.ID)
+	}
+	return first, second
+}
+
+// applyTransition runs one of the four guarded writes by name.
+func applyTransition(ctx context.Context, db *postgres.DB, name, worker string, job domain.Job) (bool, error) {
+	switch name {
+	case "complete":
+		return db.CompleteJob(ctx, worker, job)
+	case "retry":
+		return db.RetryJob(ctx, worker, job, time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC), "stale claim")
+	case "dead-letter":
+		return db.DeadLetterJob(ctx, worker, job, "stale claim")
+	default:
+		return db.ReleaseJob(ctx, worker, job)
+	}
+}
+
 func TestClaimJobEmptyQueueIsNotFound(t *testing.T) {
 	t.Parallel()
 	appDSN, _ := pgtest.Start(t)

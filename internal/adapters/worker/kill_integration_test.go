@@ -81,14 +81,14 @@ func childFailed(doing string, err error) int {
 	return 1
 }
 
-// childWorkerConfig keeps the handler alive well past the parent's assertion
-// and kill: the lease only has to be held while the parent looks at it, and the
-// reclaim is driven by moving the deadline, not by waiting it out.
+// childWorkerConfig leases for five seconds: long enough for the parent to read
+// the held lease and SIGKILL, short enough that the kill test can wait the
+// lease out instead of shortening it.
 func childWorkerConfig() worker.Config {
 	return worker.Config{
 		WorkerID:       os.Getenv(childIDEnv),
-		Lease:          60 * time.Second,
-		HandlerTimeout: 20 * time.Second,
+		Lease:          5 * time.Second,
+		HandlerTimeout: time.Second,
 		PollInterval:   20 * time.Millisecond,
 		MaxAttempts:    3,
 		BackoffBase:    time.Second,
@@ -98,17 +98,19 @@ func childWorkerConfig() worker.Config {
 
 // childSender reports from the worker process on stdout: the parent waits for
 // "handler-started" before it kills the process, and reads the delivered
-// message from the recording mode.
+// message from the recording mode. The blocking mode ignores its context on
+// purpose — a sender that does not honour cancellation is exactly what leaves a
+// killed worker's lease held.
 type childSender struct{ mode string }
 
-func (s childSender) Send(ctx context.Context, msg domain.Message) error {
+func (s childSender) Send(_ context.Context, msg domain.Message) error {
 	if s.mode == "recording" {
 		fmt.Printf("child: sent to=%s subject=%s\n", msg.To, msg.Subject)
 		return nil
 	}
 	fmt.Println("child: handler-started")
-	<-ctx.Done()
-	return ctx.Err()
+	<-time.After(time.Hour)
+	return errors.New("the blocked sender never delivers")
 }
 
 // childProcess is one re-executed worker under the parent's control.
@@ -190,7 +192,6 @@ func waitForChildLine(t *testing.T, child *childProcess, want string) string {
 // held.
 func TestWorkerKilledMidJobIsRetried(t *testing.T) {
 	t.Parallel()
-	ctx := t.Context()
 	appDSN, ownerDSN := pgtest.Start(t)
 	owner := pgtest.Owner(t, ownerDSN)
 	fixture := pgtest.Seed(t, owner, "kill")
@@ -207,12 +208,10 @@ func TestWorkerKilledMidJobIsRetried(t *testing.T) {
 	// SIGKILL cannot run cleanup: the lease is still held, not released.
 	assertHeldLease(t, owner, job, "child-a", 1)
 
-	// Expiry is the only thing that frees the lease; moving the deadline into
-	// the past as the owner exercises the same claim predicate without sleeping
-	// out the child's 60 second lease.
-	if _, err := owner.Exec(ctx, "UPDATE jobs SET locked_until = now() - interval '1 second' WHERE id = $1", job); err != nil {
-		t.Fatalf("expiring the dead worker's lease: %v", err)
-	}
+	// The lease's expiry is the only thing that frees the job; wait it out
+	// rather than shortening it, so the reclaim runs the same predicate
+	// production does when a worker dies.
+	waitForLeaseExpiry(t, owner, job)
 
 	// Worker B reclaims the expired lease and delivers.
 	b := startChild(t, "recording", "child-b", appDSN)
@@ -240,5 +239,22 @@ func assertHeldLease(t *testing.T, owner *pgxpool.Pool, jobID uuid.UUID, workerI
 	}
 	if !state.lockedUntil.After(time.Now()) {
 		t.Errorf("locked_until = %v is not in the future, so no lease is held", state.lockedUntil)
+	}
+}
+
+// waitForLeaseExpiry waits until the dead worker's lease has passed, reading
+// the row as the owner.
+func waitForLeaseExpiry(t *testing.T, owner *pgxpool.Pool, jobID uuid.UUID) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		state := readJobState(t, owner, jobID)
+		if !state.lockedUntil.After(time.Now()) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the lease on job %s did not expire within 15s", jobID)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

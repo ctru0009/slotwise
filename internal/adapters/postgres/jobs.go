@@ -42,10 +42,20 @@ func (db *DB) ClaimJob(ctx context.Context, workerID string, claimTime time.Time
 	return job, nil
 }
 
+// attemptParam narrows a job's attempt count for the generated queries. The
+// worker's attempt budget is a small configured number, far inside int32.
+func attemptParam(attempts int) int32 {
+	return int32(attempts) //nolint:gosec // attempts is bounded by the worker's MaxAttempts
+}
+
 // CompleteJob marks the job done.
 func (db *DB) CompleteJob(ctx context.Context, workerID string, job domain.Job) (bool, error) {
 	return db.jobTransition(ctx, job, "completing job", func(ctx context.Context, q *dbgen.Queries) (int64, error) {
-		return q.CompleteJob(ctx, dbgen.CompleteJobParams{ID: job.ID, WorkerID: workerID})
+		return q.CompleteJob(ctx, dbgen.CompleteJobParams{
+			ID:       job.ID,
+			WorkerID: workerID,
+			Attempts: attemptParam(job.Attempts),
+		})
 	})
 }
 
@@ -55,6 +65,7 @@ func (db *DB) RetryJob(ctx context.Context, workerID string, job domain.Job, run
 		return q.RetryJob(ctx, dbgen.RetryJobParams{
 			ID:       job.ID,
 			WorkerID: workerID,
+			Attempts: attemptParam(job.Attempts),
 			RunAt:    runAt,
 			Reason:   pgtype.Text{String: reason, Valid: true},
 		})
@@ -67,6 +78,7 @@ func (db *DB) DeadLetterJob(ctx context.Context, workerID string, job domain.Job
 		return q.DeadLetterJob(ctx, dbgen.DeadLetterJobParams{
 			ID:       job.ID,
 			WorkerID: workerID,
+			Attempts: attemptParam(job.Attempts),
 			Reason:   pgtype.Text{String: reason, Valid: true},
 		})
 	})
@@ -75,14 +87,18 @@ func (db *DB) DeadLetterJob(ctx context.Context, workerID string, job domain.Job
 // ReleaseJob hands an interrupted job back with its attempt refunded.
 func (db *DB) ReleaseJob(ctx context.Context, workerID string, job domain.Job) (bool, error) {
 	return db.jobTransition(ctx, job, "releasing job", func(ctx context.Context, q *dbgen.Queries) (int64, error) {
-		return q.ReleaseJob(ctx, dbgen.ReleaseJobParams{ID: job.ID, WorkerID: workerID})
+		return q.ReleaseJob(ctx, dbgen.ReleaseJobParams{
+			ID:       job.ID,
+			WorkerID: workerID,
+			Attempts: attemptParam(job.Attempts),
+		})
 	})
 }
 
 // jobTransition runs one guarded job write inside the job's tenant and reports
-// whether the worker still held the lease. A zero count means the lease moved
-// on — another worker reclaimed an expired lease — which the caller logs
-// instead of retrying.
+// whether the caller still held the claim it was given. A zero count means the
+// claim moved on — another worker reclaimed an expired lease, which also bumped
+// the attempt count — and the caller logs it instead of retrying.
 func (db *DB) jobTransition(ctx context.Context, job domain.Job, name string, write func(ctx context.Context, q *dbgen.Queries) (int64, error)) (bool, error) {
 	var applied bool
 	err := db.WithTenant(ctx, job.TenantID, func(ctx context.Context, tx pgx.Tx) error {

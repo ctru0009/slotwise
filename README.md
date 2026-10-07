@@ -118,9 +118,11 @@ runaway client, not a denial-of-service defence.
 
 Booking a slot queues its mail inside the booking's own transaction, so a booking that
 committed always has its confirmation job however the process dies afterwards: there is no
-window between the insert and the enqueue to crash in. The unique key
-(tenant, booking, kind) makes a second enqueue a no-op and keeps at most one job of each
-kind per booking.
+window between the insert and the enqueue to crash in. That guarantee covers bookings
+written from M5 on; rows committed before 0006 — or by a web process that predates it
+during a deploy window — have no queue rows and get no mail, and nothing backfills them.
+The unique key (tenant, booking, kind) makes a second enqueue a no-op and keeps at most
+one job of each kind per booking.
 
 `cmd/worker` runs the queue as a separate process, so a stuck handler, a panic or a
 SIGKILL takes down a queue worker and not the HTTP server, and the queue scales on its own.
@@ -134,7 +136,8 @@ records the outcome:
   that went out just before the crash.
 - **Attempts and backoff.** `attempts` counts claims and is incremented by the claim
   itself, so an attempt that died unreported is still counted. A failed attempt requeues
-  the job after 30s, then 1m, 2m, 4m, 8m, 16m, 30m, 30m (doubling, capped at 30m).
+  the job after 30s, 1m, 2m, 4m, 8m, 16m, 30m (doubling, capped at 30m); the eighth
+  failure dead-letters instead of waiting.
 - **Dead letter.** After eight attempts a failure marks the job `dead` with the last error
   kept; nothing claims it again. A graceful shutdown releases the in-flight job
   immediately and refunds its attempt, so a deploy does not spend the budget; a reclaim
@@ -148,7 +151,7 @@ at delivery. Both messages carry the signed cancel link the public cancel route 
 
 The worker reads the tenant-scoped tables like any request does; the single cross-tenant
 operation it has is the claim itself, a narrowly granted `SECURITY DEFINER` function
-(`job_claim`) that returns only the six queue columns. Direct reads of `jobs` stay behind
+(`job_claim`) that returns only the five queue columns. Direct reads of `jobs` stay behind
 the tenant policy.
 
 ```sh

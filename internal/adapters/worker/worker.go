@@ -105,7 +105,7 @@ func (w *Worker) execute(ctx context.Context, job domain.Job) {
 
 	switch {
 	case err == nil || errors.Is(err, domain.ErrJobSkipped):
-		w.complete(ctx, job)
+		w.complete(ctx, job, err)
 	case ctx.Err() != nil:
 		// The worker's context only cancels on shutdown, and the job that
 		// cancellation interrupted belongs back in the queue now, not after a
@@ -118,14 +118,21 @@ func (w *Worker) execute(ctx context.Context, job domain.Job) {
 	}
 }
 
-// complete marks the job done.
-func (w *Worker) complete(ctx context.Context, job domain.Job) {
+// complete marks the job done. skipped carries the handler's explanation when
+// it deliberately delivered nothing, which is the only difference an operator
+// gets between a delivered mail and a skipped one.
+func (w *Worker) complete(ctx context.Context, job domain.Job, skipped error) {
 	writeCtx, cancel := w.transitionCtx(ctx)
 	defer cancel()
 
 	applied, err := w.deps.Jobs.CompleteJob(writeCtx, w.cfg.WorkerID, job)
-	if w.settled(writeCtx, "complete", job, applied, err) {
-		w.deps.Logger.InfoContext(writeCtx, "job done", "job", job.ID, "kind", string(job.Kind))
+	switch {
+	case !w.settled(writeCtx, "complete", job, applied, err):
+		return
+	case skipped != nil:
+		w.deps.Logger.InfoContext(writeCtx, "job skipped", "job", job.ID, "kind", string(job.Kind), "reason", skipped.Error())
+	default:
+		w.deps.Logger.InfoContext(writeCtx, "job done", "job", job.ID, "kind", string(job.Kind), "attempt", job.Attempts)
 	}
 }
 

@@ -17,19 +17,23 @@ const completeJob = `-- name: CompleteJob :execrows
 
 UPDATE jobs
    SET status = 'done', locked_by = NULL, locked_until = NULL, updated_at = now()
- WHERE id = $1 AND locked_by = $2::text AND status = 'running'
+ WHERE id = $1 AND locked_by = $2::text AND attempts = $3 AND status = 'running'
 `
 
 type CompleteJobParams struct {
 	ID       uuid.UUID
 	WorkerID string
+	Attempts int32
 }
 
-// Every transition is guarded by the lease the caller still holds: a job whose
-// lease expired and was reclaimed by another worker matches nothing, and the
-// caller logs that instead of fighting over the row.
+// Every transition is guarded by the claim that produced the caller's job: the
+// worker id and the attempt count together are a fencing token. A stale claim
+// whose lease expired and was reclaimed matches neither (the reclaim bumped
+// attempts), so its write is refused instead of clobbering the live claimant;
+// and two processes that happen to share a worker id still cannot confuse
+// their claims.
 func (q *Queries) CompleteJob(ctx context.Context, arg CompleteJobParams) (int64, error) {
-	result, err := q.db.Exec(ctx, completeJob, arg.ID, arg.WorkerID)
+	result, err := q.db.Exec(ctx, completeJob, arg.ID, arg.WorkerID, arg.Attempts)
 	if err != nil {
 		return 0, err
 	}
@@ -40,17 +44,23 @@ const deadLetterJob = `-- name: DeadLetterJob :execrows
 UPDATE jobs
    SET status = 'dead', last_error = $1, locked_by = NULL, locked_until = NULL,
        updated_at = now()
- WHERE id = $2 AND locked_by = $3::text AND status = 'running'
+ WHERE id = $2 AND locked_by = $3::text AND attempts = $4 AND status = 'running'
 `
 
 type DeadLetterJobParams struct {
 	Reason   pgtype.Text
 	ID       uuid.UUID
 	WorkerID string
+	Attempts int32
 }
 
 func (q *Queries) DeadLetterJob(ctx context.Context, arg DeadLetterJobParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deadLetterJob, arg.Reason, arg.ID, arg.WorkerID)
+	result, err := q.db.Exec(ctx, deadLetterJob,
+		arg.Reason,
+		arg.ID,
+		arg.WorkerID,
+		arg.Attempts,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -91,19 +101,20 @@ const releaseJob = `-- name: ReleaseJob :execrows
 UPDATE jobs
    SET status = 'ready', locked_by = NULL, locked_until = NULL,
        attempts = greatest(attempts - 1, 0), updated_at = now()
- WHERE id = $1 AND locked_by = $2::text AND status = 'running'
+ WHERE id = $1 AND locked_by = $2::text AND attempts = $3 AND status = 'running'
 `
 
 type ReleaseJobParams struct {
 	ID       uuid.UUID
 	WorkerID string
+	Attempts int32
 }
 
 // The refund keeps a shutdown from spending a job's attempt budget: the claim
 // incremented attempts, the handler never finished, so the claim is undone. A
 // claim whose lease expired and moved on fails the guard and stays counted.
 func (q *Queries) ReleaseJob(ctx context.Context, arg ReleaseJobParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseJob, arg.ID, arg.WorkerID)
+	result, err := q.db.Exec(ctx, releaseJob, arg.ID, arg.WorkerID, arg.Attempts)
 	if err != nil {
 		return 0, err
 	}
@@ -114,7 +125,7 @@ const retryJob = `-- name: RetryJob :execrows
 UPDATE jobs
    SET status = 'ready', run_at = $1, last_error = $2,
        locked_by = NULL, locked_until = NULL, updated_at = now()
- WHERE id = $3 AND locked_by = $4::text AND status = 'running'
+ WHERE id = $3 AND locked_by = $4::text AND attempts = $5 AND status = 'running'
 `
 
 type RetryJobParams struct {
@@ -122,6 +133,7 @@ type RetryJobParams struct {
 	Reason   pgtype.Text
 	ID       uuid.UUID
 	WorkerID string
+	Attempts int32
 }
 
 func (q *Queries) RetryJob(ctx context.Context, arg RetryJobParams) (int64, error) {
@@ -130,6 +142,7 @@ func (q *Queries) RetryJob(ctx context.Context, arg RetryJobParams) (int64, erro
 		arg.Reason,
 		arg.ID,
 		arg.WorkerID,
+		arg.Attempts,
 	)
 	if err != nil {
 		return 0, err

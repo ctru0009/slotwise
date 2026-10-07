@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -428,6 +429,38 @@ func assertClaimShape(t *testing.T, got recorded) {
 	}
 	if !got.claimTimes[0].Equal(testNow) {
 		t.Errorf("ClaimJob claim time = %v, want %v", got.claimTimes[0], testNow)
+	}
+}
+
+// TestRunLogsTheSkipReason pins the operator's only way to tell a delivered
+// mail from a deliberately skipped one: the handler's reason reaches the log.
+func TestRunLogsTheSkipReason(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore(testJob(1))
+	var logs bytes.Buffer
+	w, err := New(testConfig(), Deps{
+		Jobs: store,
+		Handler: func(context.Context, domain.Job) error {
+			return fmt.Errorf("booking 42 is cancelled: %w", domain.ErrJobSkipped)
+		},
+		Clock:  clock.NewFake(testNow),
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got := runWorker(t, w, store, 2)
+
+	if len(got.completed) != 1 {
+		t.Fatalf("CompleteJob calls = %d, want 1", len(got.completed))
+	}
+	if !strings.Contains(logs.String(), "job skipped") {
+		t.Errorf("the log does not mark the job as skipped:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "booking 42 is cancelled") {
+		t.Errorf("the log does not carry the handler's reason:\n%s", logs.String())
 	}
 }
 

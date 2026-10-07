@@ -16,6 +16,8 @@ ALTER TABLE bookings ADD CONSTRAINT bookings_tenant_id_id_key UNIQUE (tenant_id,
 -- The unique key is the enqueue's idempotence: a confirmed booking has at most
 -- one confirmation and at most one reminder row, whatever a replay does. That
 -- also means a dead job is requeued with an UPDATE, never with a second INSERT.
+-- Rows created before this migration keep no jobs and get no mail: the queue
+-- starts with M5, and nothing backfills them.
 CREATE TABLE jobs (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id    uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
@@ -139,7 +141,7 @@ AS $$
            locked_by = $1,
            locked_until = $2 + pg_catalog.make_interval(secs => $3),
            attempts = j.attempts + 1,
-           updated_at = $2
+           updated_at = pg_catalog.now()
       FROM picked p
      WHERE j.id = p.id
        AND ((j.status = 'ready' AND j.run_at <= $2)
